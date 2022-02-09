@@ -161,6 +161,20 @@ def default_parser():
                         default=False,
                         type=boolean_string,
                         help="do evaluation during training or not")
+    
+    # causal distillation related parameters.
+    parser.add_argument("--interchange_prop",
+                        default=0.3,
+                        type=float,
+                        help="Percentage of positions across the whole sequence span to do the interchange")
+    parser.add_argument("--is_wandb",
+                        default=False,
+                        type=boolean_string,
+                        help="Whether to use wandb to report metrics to")
+    parser.add_argument("--wandb_metadata",
+                        default="",
+                        type=boolean_string,
+                        help="You need to give this if you want to log your metrics to wandb in a format of (entity:project)")
     return parser
 
 
