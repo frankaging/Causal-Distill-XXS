@@ -171,10 +171,10 @@ class TaskSpecificDistiller:
         global_step = 0
         nb_tr_steps = 0
         tr_loss = 0
-        student_encoder.train()
-        student_classifier.train()
-        teacher_encoder.eval()
-        teacher_classifier.eval()
+        self.student_encoder.train()
+        self.student_classifier.train()
+        self.teacher_encoder.eval()
+        self.teacher_classifier.eval()
         self.last_log = time.time()
         
         for epoch in trange(int(self.num_train_epochs), desc="Epoch"):
