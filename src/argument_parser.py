@@ -41,6 +41,9 @@ def default_parser():
                         default=1,
                         type=int,
                         help="output to log every global x training steps, default is 1")
+    
+    parser.add_argument("--log_interval", type=int, default=500, help="Tensorboard logging interval.")
+    parser.add_argument("--checkpoint_interval", type=int, default=4000, help="Checkpoint interval.")
 
     parser.add_argument("--max_seq_length",
                         default=512,
@@ -173,7 +176,7 @@ def default_parser():
                         help="Whether to use wandb to report metrics to")
     parser.add_argument("--wandb_metadata",
                         default="",
-                        type=boolean_string,
+                        type=str,
                         help="You need to give this if you want to log your metrics to wandb in a format of (entity:project)")
     return parser
 
