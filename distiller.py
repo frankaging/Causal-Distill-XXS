@@ -4,6 +4,7 @@ import random
 import pickle
 import time
 import psutil
+import wandb
 
 import numpy as np
 import torch
@@ -67,9 +68,6 @@ class TaskSpecificDistiller:
         self.student_classifier = student_classifier
         self.teacher_encoder = teacher_encoder
         self.teacher_classifier = teacher_classifier
-        self.student_config = student_encoder.config
-        self.teacher_config = teacher_encoder.config
-        self.vocab_size = student_encoder.config.vocab_size
         
         # common used vars
         self.fp16 = params.fp16
@@ -90,7 +88,8 @@ class TaskSpecificDistiller:
         self.device = params.device
         self.num_train_epochs = params.num_train_epochs
         self.gradient_accumulation_steps = params.gradient_accumulation_steps
-        
+        self.loss_scale = params.loss_scale
+
         # log to a local file
         log_train = open(os.path.join(self.output_dir, 'train_log.txt'), 'w', buffering=1)
         log_eval = open(os.path.join(self.output_dir, 'eval_log.txt'), 'w', buffering=1)
@@ -119,13 +118,13 @@ class TaskSpecificDistiller:
                     "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
             self.optimizer = FusedAdam(optimizer_grouped_parameters,
-                                  lr=args.learning_rate,
+                                  lr=self.learning_rate,
                                   bias_correction=False,
                                   max_grad_norm=1.0)
-            if args.loss_scale == 0:
+            if self.loss_scale == 0:
                 self.optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
             else:
-                self.optimizer = FP16_Optimizer(optimizer, static_loss_scale=args.loss_scale)
+                self.optimizer = FP16_Optimizer(optimizer, static_loss_scale=self.loss_scale)
         else:
             logger.info('FP16 is not activated, use BertAdam')
             self.optimizer = BertAdam(
@@ -230,13 +229,17 @@ class TaskSpecificDistiller:
                     teacher_pred = self.teacher_classifier(pooled_output_teacher)
                     if self.kd_model.lower() == 'kd.cls':
                         teacher_patience = torch.stack(full_output_teacher[:-1]).transpose(0, 1)
-                        if args.fp16:
+                        if self.fp16:
                             teacher_patience = teacher_patience.half()
+                        layer_index = [int(i) for i in self.fc_layer_idx.split(',')]
+                        teacher_patience = torch.stack(
+                            [torch.FloatTensor(teacher_patience[:,int(i)]) for i in layer_index]
+                        ).transpose(0, 1)
                     else:
                         teacher_patience = None
                 else:
-                    raise ValueError(f'{args.kd_model} not implemented yet')
-                if args.fp16:
+                    raise ValueError(f'{self.kd_model} not implemented yet')
+                if self.fp16:
                     teacher_pred = teacher_pred.half()
             
         # student with_grad() forward pass.
@@ -247,24 +250,18 @@ class TaskSpecificDistiller:
             logits_pred_student = self.student_classifier(
                 pooled_output_student
             )
-            if args.kd_model.lower() == 'kd.cls':
+            if self.kd_model.lower() == 'kd.cls':
                 student_patience = torch.stack(full_output_student[:-1]).transpose(0, 1)
             else:
                 student_patience = None
         else:
             raise ValueError(f'{self.kd_model} not implemented yet')
 
-        # only extracting those interested layers.
-        layer_index = [int(i) for i in self.fc_layer_idx.split(',')]
-        teacher_patience = torch.stack(
-            [torch.FloatTensor(teacher_patience[:,int(i)]) for i in layer_index]
-        ).transpose(0, 1)
-
         # calculate loss
         loss_dl, kd_loss, ce_loss = distillation_loss(
             logits_pred_student, label_ids, teacher_pred, T=self.T, alpha=self.alpha
         )
-        if args.beta > 0:
+        if self.beta > 0:
             if student_patience.shape[0] != input_ids.shape[0]:
                 # For RACE
                 n_layer = student_patience.shape[1]
@@ -279,7 +276,7 @@ class TaskSpecificDistiller:
         else:
             pt_loss = torch.tensor(0.0)
             loss = loss_dl
-        if n_gpu > 1:
+        if self.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu.
         
         # bookkeeping?
@@ -361,9 +358,7 @@ class TaskSpecificDistiller:
         """
         Log into tensorboard. Only by the master process.
         """
-        if not self.is_master:
-            return
-        
+
         log_train = open(os.path.join(self.output_dir, 'train_log.txt'), 'a', buffering=1)
         print('{},{},{},{},{},{},{},{}'.format(
                 self.epoch+1, self.n_total_iter, self.n_iter, 
@@ -429,7 +424,7 @@ class TaskSpecificDistiller:
     
     def save_checkpoint(self, checkpoint_name=None):
         if checkpoint_name == None:
-            if args.n_gpu > 1:
+            if self.n_gpu > 1:
                 torch.save(
                     self.student_encoder.module.state_dict(), 
                     os.path.join(self.output_dir, self.output_model_file + f'_e.{self.epoch}.encoder.pkl')
@@ -448,7 +443,7 @@ class TaskSpecificDistiller:
                     os.path.join(self.output_dir, self.output_model_file + f'_e.{self.epoch}.cls.pkl')
                 )
         else:
-            if args.n_gpu > 1:
+            if self.n_gpu > 1:
                 torch.save(
                     self.student_encoder.module.state_dict(), 
                     os.path.join(self.output_dir, checkpoint_name)

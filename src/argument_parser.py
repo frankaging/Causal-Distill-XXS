@@ -30,6 +30,10 @@ def default_parser():
                         default=None,
                         type=str,
                         help="The name of the task for training.")
+    parser.add_argument("--run_name",
+                        default=None,
+                        type=str,
+                        help="The name of the task for training.")
 
     # System related parameters
     parser.add_argument("--output_dir",
@@ -225,6 +229,7 @@ def complete_argument(
     output_name += '_lr.' + str(args.learning_rate) + '_T.' + str(args.T) + '_alpha.' + str(args.alpha)
     output_name += '_beta.' + str(args.beta) + '_bs.' + str(args.train_batch_size)
     args.output_dir = os.path.join(args.output_dir, output_name)
+    args.run_name = output_name
 
     run = 1
     while os.path.exists(args.output_dir + '-run-' + str(run)):
@@ -245,7 +250,6 @@ def complete_argument(
         n_gpu = torch.cuda.device_count()
     else:
         device = torch.device("cpu")
-
         n_gpu = 0
         
     args.device = device

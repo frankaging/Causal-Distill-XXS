@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # Prepare Parser
 ##########################################################################
 parser = default_parser()
-DEBUG = True
+DEBUG = False
 if DEBUG:
     logger.info("IN DEBUG MODE")
     # run simple fune-tuning *teacher* by uncommenting below cmd
