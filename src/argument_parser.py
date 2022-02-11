@@ -56,6 +56,11 @@ def default_parser():
                              "Sequences longer than this will be truncated, and sequences shorter \n"
                              "than this will be padded.")
 
+    parser.add_argument("--max_training_examples",
+                        default=None,
+                        type=int,
+                        help="Total number of training examples to use.")
+    
     # Training related parameters
     parser.add_argument('--seed',
                         type=int,
@@ -170,6 +175,10 @@ def default_parser():
                         help="do evaluation during training or not")
     
     # causal distillation related parameters.
+    parser.add_argument("--diito_type",
+                        default="random",
+                        type=str,
+                        help="DIITO training architecture")
     parser.add_argument("--interchange_prop",
                         default=0.3,
                         type=float,

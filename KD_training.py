@@ -200,7 +200,9 @@ logger.info('num parameters in student model are %d and %d' % (count_parameters(
 
 
 distiller = TaskSpecificDistiller(
-    args, train_dataloader, 
+    args, 
+    train_dataloader, eval_dataloader, 
+    eval_label_ids, num_labels, output_mode,
     student_encoder, student_classifier,
     teacher_encoder, teacher_classifier,
 )

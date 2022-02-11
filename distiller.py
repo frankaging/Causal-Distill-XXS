@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 
 class TaskSpecificDistiller:
     def __init__(
-        self, params, dataset,
+        self, params, 
+        train_dataset, eval_dataset, 
+        eval_label_ids, num_labels, output_mode,
         student_encoder: nn.Module, student_classifier: nn.Module,
         teacher_encoder: nn.Module, teacher_classifier: nn.Module,
     ):
@@ -62,8 +64,12 @@ class TaskSpecificDistiller:
             self.params.train_batch_size * self.params.gradient_accumulation_steps
         )
         
-        self.dataset = dataset
-
+        self.train_dataset = train_dataset
+        self.eval_dataset = eval_dataset
+        self.eval_label_ids = eval_label_ids
+        self.num_labels = num_labels
+        self.output_mode = output_mode
+        
         self.student_encoder = student_encoder
         self.student_classifier = student_classifier
         self.teacher_encoder = teacher_encoder
@@ -180,7 +186,7 @@ class TaskSpecificDistiller:
             tr_loss, tr_ce_loss, tr_kd_loss, tr_acc = 0, 0, 0, 0
             nb_tr_examples, nb_tr_steps = 0, 0
             
-            iter_bar = tqdm(self.dataset, desc="-Iter", disable=False)
+            iter_bar = tqdm(self.train_dataset, desc="-Iter", disable=False)
             for batch in iter_bar:
                 batch = tuple(t.to(self.device) for t in batch)
                 # teascher patient is on-the-fly, we can skip the logic for different batch format.
@@ -202,7 +208,7 @@ class TaskSpecificDistiller:
                 )
             iter_bar.close()
 
-            logger.info(f"--- Ending epoch {self.epoch}/{self.params.n_epoch-1}")
+            logger.info(f"--- Ending epoch {self.epoch}/{self.num_train_epochs-1}")
             self.end_epoch()
 
         logger.info("Save very last checkpoint as `pytorch_model.bin`.")
@@ -296,7 +302,7 @@ class TaskSpecificDistiller:
         self.acc_tr_loss += self.last_loss * n_sample
         self.acc_tr_kd_loss += self.last_kd_loss * n_sample
         self.acc_tr_ce_loss += self.last_ce_loss * n_sample
-        self.acc_tr_pt_loss += self.last_pt_loss * n_sample
+        self.acc_tr_pt_loss = self.last_pt_loss * n_sample
         pred_cls = logits_pred_student.data.max(1)[1]
         self.acc_tr_acc += pred_cls.eq(label_ids).sum().cpu().item()
         self.n_sequences_epoch += n_sample
@@ -308,7 +314,6 @@ class TaskSpecificDistiller:
         self.tr_acc = self.acc_tr_acc / self.n_sequences_epoch
               
         self.optimize(loss)
-
             
     def optimize(self, loss):
         if self.gradient_accumulation_steps > 1:
@@ -353,7 +358,7 @@ class TaskSpecificDistiller:
         if self.n_total_iter % self.params.log_interval == 0:
             self.log_tensorboard()
             self.last_log = time.time()
-    
+
     def log_tensorboard(self):
         """
         Log into tensorboard. Only by the master process.
@@ -383,11 +388,11 @@ class TaskSpecificDistiller:
                     "train/ce_loss": self.last_ce_loss, 
                     "train/pt_loss": self.last_pt_loss, 
                     
-                    "train/acc_loss": self.tr_loss, 
-                    "train/acc_kd_loss": self.tr_kd_loss, 
-                    "train/acc_ce_loss": self.tr_ce_loss, 
-                    "train/acc_pt_loss": self.tr_pt_loss, 
-                    "train/acc_tr_acc": self.tr_acc, 
+                    "train/epoch_loss": self.tr_loss, 
+                    "train/epoch_kd_loss": self.tr_kd_loss, 
+                    "train/epoch_ce_loss": self.tr_ce_loss, 
+                    "train/epoch_pt_loss": self.tr_pt_loss, 
+                    "train/epoch_tr_acc": self.tr_acc, 
                 }, 
                 step=self.n_total_iter
             )
@@ -395,12 +400,11 @@ class TaskSpecificDistiller:
             wandb.log(
                 {
                     "train/learning_rate": self.lr_this_step,
-                    "train/memory_usage": psutil.virtual_memory()._asdict()["used"] / 1_000_000,
                     "train/speed": time.time() - self.last_log,
                 }, 
                 step=self.n_total_iter
             )
-    
+
     def end_epoch(self):
         """
         Finally arrived at the end of epoch (full pass on dataset).
@@ -408,6 +412,31 @@ class TaskSpecificDistiller:
         """
         logger.info(f"{self.n_sequences_epoch} sequences have been trained during this epoch.")
 
+        # let us do evaluation on the eval just for bookkeeping.
+        # make sure this is not intervening your training in anyway
+        # otherwise, data is leaking!
+        if 'race' in self.task_name:
+            result = eval_model_dataloader(
+                self.student_encoder, self.student_classifier, 
+                self.eval_dataset, self.device, False
+            )
+        else:
+            result = eval_model_dataloader_nli(
+                self.task_name.lower(), self.eval_label_ids, 
+                self.student_encoder, self.student_classifier, self.eval_dataset,
+                self.kd_model, self.num_labels, self.device, 
+                self.weights, self.fc_layer_idx, self.output_mode
+            )
+        log_eval = open(os.path.join(self.output_dir, 'eval_log.txt'), 'a', buffering=1)
+        if self.task_name in ['CoLA']:
+            print('{},{},{}'.format(self.epoch+1, result['mcc'], result['eval_loss']), file=log_eval)
+        else:
+            if 'race' in self.task_name:
+                print('{},{},{}'.format(self.epoch+1, result['acc'], result['loss']), file=log_eval)
+            else:
+                print('{},{},{}'.format(self.epoch+1, result['acc'], result['eval_loss']), file=log_eval)
+        log_eval.close()
+        
         self.save_checkpoint()
         if self.is_wandb:
             wandb.log(
@@ -416,11 +445,41 @@ class TaskSpecificDistiller:
                     'epoch': self.epoch
                 }
             )
+            if self.task_name in ['CoLA']:
+                wandb.log(
+                    {
+                        "epoch/eval_mcc": result['mcc'], 
+                        "epoch/eval_loss": result['eval_loss'], 
+                        'epoch': self.epoch
+                    }
+                )
+            else:
+                if 'race' in self.task_name:
+                    wandb.log(
+                        {
+                            "epoch/eval_acc": result['acc'], 
+                            "epoch/eval_loss": result['loss'], 
+                            'epoch': self.epoch
+                        }
+                    )
+                else:
+                    wandb.log(
+                        {
+                            "epoch/eval_acc": result['acc'], 
+                            "epoch/eval_loss": result['eval_loss'], 
+                            'epoch': self.epoch
+                        }
+                    ) 
 
         self.epoch += 1
         self.n_sequences_epoch = 0
         self.n_iter = 0
         self.total_loss_epoch = 0
+        
+        self.acc_tr_loss = 0
+        self.acc_tr_kd_loss = 0
+        self.acc_tr_ce_loss = 0
+        self.acc_tr_acc = 0
     
     def save_checkpoint(self, checkpoint_name=None):
         if checkpoint_name == None:
@@ -446,19 +505,18 @@ class TaskSpecificDistiller:
             if self.n_gpu > 1:
                 torch.save(
                     self.student_encoder.module.state_dict(), 
-                    os.path.join(self.output_dir, checkpoint_name)
+                    os.path.join(self.output_dir, "encoder."+checkpoint_name)
                 )
                 torch.save(
                     self.student_classifier.module.state_dict(), 
-                    os.path.join(self.output_dir, checkpoint_name)
+                    os.path.join(self.output_dir, "cls."+checkpoint_name)
                 )
             else:
                 torch.save(
                     self.student_encoder.state_dict(), 
-                    os.path.join(self.output_dir, checkpoint_name)
+                    os.path.join(self.output_dir, "encoder."+checkpoint_name)
                 )
                 torch.save(
                     self.student_classifier.state_dict(), 
-                    os.path.join(self.output_dir, checkpoint_name)
+                    os.path.join(self.output_dir, "cls."+checkpoint_name)
                 )
-        

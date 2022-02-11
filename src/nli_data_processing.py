@@ -51,7 +51,7 @@ class InputFeatures(object):
 class DataProcessor(object):
     """Base class for data converters for sequence classification data sets."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """Gets a collection of `InputExample`s for the train set."""
         raise NotImplementedError()
 
@@ -79,11 +79,13 @@ class DataProcessor(object):
 class MrpcProcessor(DataProcessor):
     """Processor for the MRPC data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         logger.info("LOOKING AT {}".format(os.path.join(data_dir, "train.tsv")))
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -99,10 +101,13 @@ class MrpcProcessor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, i)
@@ -120,10 +125,12 @@ class MrpcProcessor(DataProcessor):
 class MnliProcessor(DataProcessor):
     """Processor for the MultiNLI data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -140,10 +147,13 @@ class MnliProcessor(DataProcessor):
         """See base class."""
         return ["contradiction", "entailment", "neutral"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -161,7 +171,7 @@ class MnliProcessor(DataProcessor):
 class MnliMismatchedProcessor(MnliProcessor):
     """Processor for the MultiNLI Mismatched data set (GLUE version)."""
 
-    def get_dev_examples(self, data_dir):
+    def get_dev_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
             self._read_tsv(os.path.join(data_dir, "dev_mismatched.tsv")),
@@ -177,10 +187,12 @@ class MnliMismatchedProcessor(MnliProcessor):
 class ColaProcessor(DataProcessor):
     """Processor for the CoLA data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -196,12 +208,15 @@ class ColaProcessor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             if set_type != 'test':
+                if max_training_examples is not None:
+                    if len(examples) == max_training_examples:
+                        break
                 text_a = line[3]
                 label = line[1]
                 examples.append(
@@ -219,10 +234,12 @@ class ColaProcessor(DataProcessor):
 class Sst2Processor(DataProcessor):
     """Processor for the SST-2 data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -238,13 +255,16 @@ class Sst2Processor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
             if set_type != 'test':
+                if max_training_examples is not None:
+                    if len(examples) == max_training_examples:
+                        break
                 guid = "%s-%s" % (set_type, i)
                 text_a = line[0]
                 label = line[1]
@@ -263,10 +283,12 @@ class Sst2Processor(DataProcessor):
 class StsbProcessor(DataProcessor):
     """Processor for the STS-B data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -283,10 +305,13 @@ class StsbProcessor(DataProcessor):
         """See base class."""
         return [None]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -301,10 +326,12 @@ class StsbProcessor(DataProcessor):
 class QqpProcessor(DataProcessor):
     """Processor for the STS-B data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -320,13 +347,16 @@ class QqpProcessor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
             if i == 0:
                 continue
             if set_type != 'test':
+                if max_training_examples is not None:
+                    if len(examples) == max_training_examples:
+                        break
                 guid = "%s-%s" % (set_type, line[0])
                 try:
                     text_a = line[3]
@@ -353,10 +383,12 @@ class QqpProcessor(DataProcessor):
 class QnliProcessor(DataProcessor):
     """Processor for the STS-B data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -374,10 +406,13 @@ class QnliProcessor(DataProcessor):
         """See base class."""
         return ["entailment", "not_entailment"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -395,10 +430,12 @@ class QnliProcessor(DataProcessor):
 class RteProcessor(DataProcessor):
     """Processor for the RTE data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -414,10 +451,13 @@ class RteProcessor(DataProcessor):
         """See base class."""
         return ["entailment", "not_entailment"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -435,10 +475,12 @@ class RteProcessor(DataProcessor):
 class WnliProcessor(DataProcessor):
     """Processor for the WNLI data set (GLUE version)."""
 
-    def get_train_examples(self, data_dir):
+    def get_train_examples(self, data_dir, max_training_examples):
         """See base class."""
         return self._create_examples(
-            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train")
+            self._read_tsv(os.path.join(data_dir, "train.tsv")), "train",
+            max_training_examples
+        )
 
     def get_dev_examples(self, data_dir):
         """See base class."""
@@ -449,10 +491,13 @@ class WnliProcessor(DataProcessor):
         """See base class."""
         return ["0", "1"]
 
-    def _create_examples(self, lines, set_type):
+    def _create_examples(self, lines, set_type, max_training_examples=None):
         """Creates examples for the training and dev sets."""
         examples = []
         for (i, line) in enumerate(lines):
+            if max_training_examples is not None:
+                if len(examples) == max_training_examples:
+                    break
             if i == 0:
                 continue
             guid = "%s-%s" % (set_type, line[0])
@@ -637,7 +682,7 @@ def get_glue_task_dataloader(task_name, set_name, tokenizer, args, sampler, batc
 
     label_list = processor.get_labels()
     if set_name.lower() == 'train':
-        examples = processor.get_train_examples(args.raw_data_dir)
+        examples = processor.get_train_examples(args.raw_data_dir, args.max_training_examples)
     elif set_name.lower() == 'dev':
         examples = processor.get_dev_examples(args.raw_data_dir)
     elif set_name.lower() == 'test':
