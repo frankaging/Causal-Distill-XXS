@@ -3,6 +3,22 @@ import math
 from torch import nn
 import torch.nn.functional as F
 
+def diito_distillation_loss(y, teacher_scores, T, alpha, reduction_kd='mean', reduction_nll='mean'):
+    #if teacher_scores is not None and y.dtype != teacher_scores.dtype:
+    #    teacher_scores = teacher_scores.half()
+
+    if teacher_scores is not None:
+        d_loss = nn.KLDivLoss(reduction=reduction_kd)(F.log_softmax(y / T, dim=1),
+                                                      F.softmax(teacher_scores / T, dim=1)) * T * T
+    else:
+        assert alpha == 0, 'alpha cannot be {} when teacher scores are not provided'.format(alpha)
+        d_loss = 0.0
+
+    # print(d_loss.shape, d_loss)
+    # print('\n', nll_loss.shape, nll_loss)
+    diito_loss = d_loss
+    # print('in func:', d_loss.item(), nll_loss.item(), alpha, tol_loss.item())
+    return diito_loss
 
 def distillation_loss(y, labels, teacher_scores, T, alpha, reduction_kd='mean', reduction_nll='mean'):
     #if teacher_scores is not None and y.dtype != teacher_scores.dtype:

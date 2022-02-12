@@ -122,18 +122,12 @@ def load_model(model, checkpoint, args, mode='exact', train_mode='finetune', ver
     if args.fp16:
         logger.info('fp16 activated, now call model.half()')
         model.half()
-    model.to(device)
 
     if train_mode != 'finetune':
         if verbose:
             logger.info('freeze BERT layer in DEBUG mode')
         model.set_mode(train_mode)
 
-    if local_rank != -1:
-        raise NotImplementedError('not implemented for local_rank != 1')
-    elif n_gpu > 1:
-        logger.info('data parallel because more than one gpu')
-        model = torch.nn.DataParallel(model)
     return model
 
 

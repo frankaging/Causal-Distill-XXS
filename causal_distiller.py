@@ -34,6 +34,71 @@ logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class InterventionableEncoder(torch.nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.activation = {}
+        self.model = model
+        self.is_cude = next(self.model.parameters()).is_cuda
+        
+    # these functions are model dependent
+    # they specify how the coordinate system works
+    def _coordinate_to_getter(self, coords):
+        handlers = []
+        for coord in coords:
+            layer, source_mask, _ = coord
+            def hook(model, input, output):
+                self.activation[f'{layer}'] = output[source_mask]
+            if self.is_cude:
+                handler = self.model.module.bert.encoder.layer[layer].output.register_forward_hook(hook)
+            else:
+                handler = self.model.bert.encoder.layer[layer].output.register_forward_hook(hook)
+            handlers += [handler]
+        return handlers
+
+    def _coordinate_to_setter(self, coords):
+        handlers = []
+        for coord in coords:
+            layer, _, base_mask = coord
+            def hook(model, input, output):
+                # NOTE: This might lead to errors about inplace manipulations during the backprop.
+                output[base_mask] = self.activation[f'{layer}']
+            if self.is_cude:
+                handler = self.model.module.bert.encoder.layer[layer].output.register_forward_hook(hook)
+            else:
+                handler = self.model.bert.encoder.layer[layer].output.register_forward_hook(hook)
+            handlers += [handler]
+        return handlers
+
+    def forward(self, source, base, coords):
+        # NOTE: other ways that do not require constantly adding / removing hooks should exist
+
+        # set hook to get activation
+        # get_handler = self.names_to_layers[layer_name].register_forward_hook(self._get_activation(layer_name))
+        get_handlers = self._coordinate_to_getter(coords)
+
+        # get output on source examples (and also capture the activations)
+        source_outputs = self.model(*source)
+
+        # remove the handler (don't store activations on base)
+        for get_handler in get_handlers:
+            get_handler.remove()
+
+        # get base logits
+        base_outputs = self.model(*base)
+        
+        # set hook to do the intervention
+        set_handlers = self._coordinate_to_setter(coords)
+
+        # get counterfactual output on base examples
+        counterfactual_outputs = self.model(*base)
+
+        # remove the handler
+        for set_handler in set_handlers:
+            set_handler.remove()
+
+        return source_outputs, base_outputs, counterfactual_outputs
+
 class TaskSpecificCausalDistiller:
     def __init__(
         self, params, 
@@ -54,14 +119,20 @@ class TaskSpecificCausalDistiller:
         
         self.params = params
         
-        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}'.format(
+        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}'.format(
             self.params.task_name, 
             self.params.student_hidden_layers,
             self.params.learning_rate,
             self.params.T, 
             self.params.alpha, 
             self.params.beta,
-            self.params.train_batch_size * self.params.gradient_accumulation_steps
+            self.params.train_batch_size * self.params.gradient_accumulation_steps,
+            self.params.is_diito,
+            self.params.neuron_mapping,
+            self.params.interchange_prop,
+            self.params.interchange_max_token,
+            self.params.interchange_consecutive_only,
+            self.params.data_augment
         )
         
         self.train_dataset = train_dataset
@@ -70,12 +141,8 @@ class TaskSpecificCausalDistiller:
         self.num_labels = num_labels
         self.output_mode = output_mode
         
-        self.student_encoder = student_encoder
-        self.student_classifier = student_classifier
-        self.teacher_encoder = teacher_encoder
-        self.teacher_classifier = teacher_classifier
-        
         # common used vars
+        self.local_rank = -1
         self.fp16 = params.fp16
         self.T = params.T
         self.alpha = params.alpha
@@ -95,16 +162,59 @@ class TaskSpecificCausalDistiller:
         self.num_train_epochs = params.num_train_epochs
         self.gradient_accumulation_steps = params.gradient_accumulation_steps
         self.loss_scale = params.loss_scale
+        try:
+            self.teacher_hidden_layers = self.teacher_encoder.config.num_hidden_layers
+        except:
+            self.teacher_hidden_layers = self.teacher_encoder.module.config.num_hidden_layers
+        self.student_hidden_layers = params.student_hidden_layers
+        self.neuron_mapping = params.neuron_mapping
+        self.layer_mapping = {}
+        if self.neuron_mapping == "full":
+            layer_count = self.teacher_hidden_layers // self.student_hidden_layers
+            for i in range(0, self.student_hidden_layers):
+                self.layer_mapping[i] = []
+                for j in range(0, layer_count):
+                    self.layer_mapping[i] += [(i*layer_count+j)]
+        elif self.neuron_mapping == "late":
+            assert False # Not Implemented
+        elif self.neuron_mapping == "mid":
+            assert False # Not Implemented
         
         # DIITO params
         self.is_diito = params.is_diito
         self.diito_type = params.diito_type
         self.interchange_prop = params.interchange_prop
         self.interchange_max_token = params.interchange_max_token
-        self.interchange_masked_token_only = params.interchange_masked_token_only
+        self.interchange_masked_token_only = False # this is not supported.
         self.interchange_consecutive_only = params.interchange_consecutive_only
         self.data_augment = params.data_augment
         
+        if self.is_diito:
+            self.student_encoder = InterventionableEncoder(student_encoder)
+            self.student_classifier = student_classifier
+            self.teacher_encoder = InterventionableEncoder(teacher_encoder)
+            self.teacher_classifier = teacher_classifier
+        else:
+            self.student_encoder = student_encoder
+            self.student_classifier = student_classifier
+            self.teacher_encoder = teacher_encoder
+            self.teacher_classifier = teacher_classifier
+
+        # parallel models
+        self.student_encoder.to(self.device)
+        self.student_classifier.to(self.device)
+        self.teacher_encoder.to(self.device)
+        self.teacher_classifier.to(self.device)
+        
+        if self.local_rank != -1:
+            raise NotImplementedError('not implemented for local_rank != 1')
+        elif self.n_gpu > 1:
+            logger.info('data parallel because more than one gpu for all models')
+            self.student_encoder = torch.nn.DataParallel(self.student_encoder)
+            self.student_classifier = torch.nn.DataParallel(self.student_classifier)
+            self.teacher_encoder = torch.nn.DataParallel(self.teacher_encoder)
+            self.teacher_classifier = torch.nn.DataParallel(self.teacher_classifier)
+
         # log to a local file
         log_train = open(os.path.join(self.output_dir, 'train_log.txt'), 'w', buffering=1)
         log_eval = open(os.path.join(self.output_dir, 'eval_log.txt'), 'w', buffering=1)
@@ -163,17 +273,28 @@ class TaskSpecificCausalDistiller:
         self.lr_this_step = 0
         self.last_log = 0
         
+        self.last_loss_diito = 0
+        self.last_cf_pt_loss = 0
+        
         self.acc_tr_loss = 0
         self.acc_tr_kd_loss = 0
         self.acc_tr_ce_loss = 0
         self.acc_tr_pt_loss = 0
         self.acc_tr_acc = 0
         
+        self.acc_tr_loss_diito = 0
+        self.acc_tr_cf_pt_loss = 0
+        self.acc_tr_cf_acc = 0
+        
         self.tr_loss = 0
         self.tr_kd_loss = 0
         self.tr_ce_loss = 0
         self.tr_pt_loss = 0
         self.tr_acc = 0
+        
+        self.tr_loss_diito = 0
+        self.tr_cf_pt_loss = 0
+        self.tr_cf_acc = 0
         
         # DIITO related params that report to tensorboard
     
@@ -206,6 +327,7 @@ class TaskSpecificCausalDistiller:
         
         for epoch in trange(int(self.num_train_epochs), desc="Epoch"):
             tr_loss, tr_ce_loss, tr_kd_loss, tr_acc = 0, 0, 0, 0
+            
             nb_tr_examples, nb_tr_steps = 0, 0
             
             iter_bar = tqdm(self.train_dataset, desc="-Iter", disable=False)
@@ -244,7 +366,6 @@ class TaskSpecificCausalDistiller:
         lengths, dual_lengths,
         pred_mask, dual_pred_mask,
     ):        
-        print(lengths)
         # params
         interchange_prop = self.interchange_prop
         interchange_max_token = self.interchange_max_token # if -1 then we don't restrict on this.
@@ -305,21 +426,185 @@ class TaskSpecificCausalDistiller:
     
     def step_diito(
         self,
-        input_ids,
-        input_mask,
-        segment_ids,
-        label_ids,
-        dual_input_ids,
-        dual_input_mask,
-        dual_segment_ids,
-        dual_label_ids,
+        source_input_ids,
+        source_input_mask,
+        source_segment_ids,
+        source_label_ids,
+        base_input_ids,
+        base_input_mask,
+        base_segment_ids,
+        base_label_ids,
     ):
-        _ = prepare_interchange_mask(
-            input_mask.sum(dim=-1), dual_input_mask.sum(dim=-1),
-            input_mask, dual_input_mask,
+        source_intervention_mask, base_intervention_mask = self.prepare_interchange_mask(
+            source_input_mask.sum(dim=-1), base_input_mask.sum(dim=-1),
+            source_input_mask, base_input_mask,
         )
-        # first, we simply prepare interchange positions.
-        pass
+        student_invention_layer = random.choice(list(self.layer_mapping.keys()))
+        teacher_invention_layer = self.layer_mapping[student_invention_layer]
+        ##########
+        # teacher
+        with torch.no_grad():
+            if self.alpha == 0:
+                teacher_pred, teacher_patience = None, None
+            else:
+                teacher_source_outputs, _, teacher_counterfactual_outputs = \
+                    self.teacher_encoder(
+                        source=[
+                            source_input_ids, source_segment_ids, source_input_mask, 
+                        ],
+                        base=[
+                            base_input_ids, base_segment_ids, base_input_mask,
+                        ],
+                        coords=[
+                            (
+                                l, source_intervention_mask, base_intervention_mask
+                            ) for l in teacher_invention_layer
+                        ]
+                    )
+                # define a new function to compute loss values for both output_modes
+                full_output_teacher, pooled_output_teacher = teacher_source_outputs
+                # counterfactual outputs
+                cf_full_output_teacher, cf_pooled_output_teacher = teacher_counterfactual_outputs
+                
+                if self.kd_model.lower() in['kd', 'kd.cls']:
+                    
+                    teacher_pred = self.teacher_classifier(pooled_output_teacher)
+                    cf_teacher_pred = self.teacher_classifier(cf_pooled_output_teacher)
+                    
+                    if self.kd_model.lower() == 'kd.cls':
+                        
+                        teacher_patience = torch.stack(full_output_teacher[:-1]).transpose(0, 1)
+                        cf_teacher_patience = torch.stack(cf_full_output_teacher[:-1]).transpose(0, 1)
+                        if self.fp16:
+                            teacher_patience = teacher_patience.half()
+                            cf_teacher_patience = cf_teacher_patience.half()
+                        layer_index = [int(i) for i in self.fc_layer_idx.split(',')]
+                        teacher_patience = torch.stack(
+                            [torch.FloatTensor(teacher_patience[:,int(i)]) for i in layer_index]
+                        ).transpose(0, 1)
+                        cf_teacher_patience = torch.stack(
+                            [torch.FloatTensor(cf_teacher_patience[:,int(i)]) for i in layer_index]
+                        ).transpose(0, 1)
+                        
+                    else:
+                        teacher_patience = None
+                        cf_teacher_patience = None
+                else:
+                    raise ValueError(f'{self.kd_model} not implemented yet')
+                if self.fp16:
+                    teacher_pred = teacher_pred.half()
+                    cf_teacher_pred = cf_teacher_pred.half()
+        
+        ##########
+        # student
+        student_source_outputs, _, student_counterfactual_outputs = \
+            self.student_encoder(
+                source=[
+                    source_input_ids, source_segment_ids, source_input_mask, 
+                ],
+                base=[
+                    base_input_ids, base_segment_ids, base_input_mask,
+                ],
+                coords=[
+                    (student_invention_layer, source_intervention_mask, base_intervention_mask),
+                ]
+            )
+        full_output_student, pooled_output_student = student_source_outputs
+        cf_full_output_student, cf_pooled_output_student = student_source_outputs
+        
+        if self.kd_model.lower() in['kd', 'kd.cls']:
+            logits_pred_student = self.student_classifier(
+                pooled_output_student
+            )
+            cf_logits_pred_student = self.student_classifier(
+                cf_pooled_output_student
+            )
+            if self.kd_model.lower() == 'kd.cls':
+                student_patience = torch.stack(full_output_student[:-1]).transpose(0, 1)
+                cf_student_patience = torch.stack(cf_full_output_student[:-1]).transpose(0, 1)
+            else:
+                student_patience = None
+                cf_student_patience = None
+        else:
+            raise ValueError(f'{self.kd_model} not implemented yet')
+        
+        # calculate loss, along with counterfactual loss
+        loss_dl, kd_loss, ce_loss = distillation_loss(
+            logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
+        )
+        loss_diito = diito_distillation_loss(
+            logits_pred_student, teacher_pred, T=self.T, alpha=self.alpha
+        )
+        
+        if self.beta > 0:
+            if student_patience.shape[0] != input_ids.shape[0]:
+                # For RACE
+                n_layer = student_patience.shape[1]
+                student_patience = student_patience.transpose(0, 1).contiguous().view(
+                    n_layer, input_ids.shape[0], -1
+                ).transpose(0,1)
+                cf_student_patience = cf_student_patience.transpose(0, 1).contiguous().view(
+                    n_layer, input_ids.shape[0], -1
+                ).transpose(0,1)
+            pt_loss = self.beta * patience_loss(
+                teacher_patience, student_patience, 
+                self.normalize_patience
+            )
+            cf_pt_loss = self.beta * patience_loss(
+                cf_teacher_patience, cf_student_patience, 
+                self.normalize_patience
+            )
+            loss = loss_dl + pt_loss + cf_pt_loss + loss_diito
+        else:
+            pt_loss = torch.tensor(0.0)
+            loss = loss_dl + loss_diito
+        if self.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu.
+        
+        # last standard loss
+        self.total_loss_epoch += loss.item()
+        self.last_loss = loss.item()
+        self.last_loss_dl = loss_dl.mean().item() if self.n_gpu > 0 else loss_dl.item()
+        self.last_kd_loss = kd_loss.mean().item() if self.n_gpu > 0 else kd_loss.item()
+        self.last_ce_loss = ce_loss.mean().item() if self.n_gpu > 0 else ce_loss.item()
+        self.last_pt_loss = pt_loss.mean().item() if self.n_gpu > 0 else pt_loss.item()
+        # last cf loss
+        self.last_loss_diito = loss_diito.mean().item() if self.n_gpu > 0 else loss_diito.item()
+        self.last_cf_pt_loss = cf_pt_loss.mean().item() if self.n_gpu > 0 else cf_pt_loss.item()
+        
+        # epoch standard loss
+        n_sample = input_ids.shape[0]
+        self.acc_tr_loss += self.last_loss * n_sample
+        self.acc_tr_kd_loss += self.last_kd_loss * n_sample
+        self.acc_tr_ce_loss += self.last_ce_loss * n_sample
+        self.acc_tr_pt_loss = self.last_pt_loss * n_sample
+        # epoch cf loss
+        self.acc_tr_loss_diito += self.last_loss_diito * n_sample
+        self.acc_tr_cf_pt_loss = self.last_cf_pt_loss * n_sample
+        
+        # pred acc
+        pred_cls = logits_pred_student.data.max(1)[1]
+        self.acc_tr_acc += pred_cls.eq(source_label_ids).sum().cpu().item()
+        # cf pred acc
+        cf_pred_cls_student = cf_logits_pred_student.data.max(1)[1]
+        cf_pred_cls_teacher = cf_teacher_pred.data.max(1)[1]
+        self.acc_tr_cf_acc += cf_pred_cls_student.eq(cf_pred_cls_teacher).sum().cpu().item()
+        
+        self.n_sequences_epoch += n_sample
+        
+        # standard acc metrics
+        self.tr_loss = self.acc_tr_loss / self.n_sequences_epoch
+        self.tr_kd_loss = self.acc_tr_kd_loss / self.n_sequences_epoch
+        self.tr_ce_loss = self.acc_tr_ce_loss / self.n_sequences_epoch
+        self.tr_pt_loss = self.acc_tr_pt_loss / self.n_sequences_epoch
+        self.tr_acc = self.acc_tr_acc / self.n_sequences_epoch
+        
+        # cf acc metrics
+        self.tr_loss_diito = self.acc_tr_loss_diito / self.n_sequences_epoch
+        self.tr_cf_pt_loss = self.acc_tr_cf_pt_loss / self.n_sequences_epoch
+        self.tr_cf_acc = self.acc_tr_cf_acc / self.n_sequences_epoch
+              
+        self.optimize(loss)
     
     def step(
         self,
@@ -391,12 +676,7 @@ class TaskSpecificCausalDistiller:
         if self.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu.
         
-        # bookkeeping?
-        self.last_loss_dl = 0
-        self.last_kd_loss = 0
-        self.last_ce_loss = 0 
-        self.last_pt_loss = 0
-        
+        # bookkeeping
         self.total_loss_epoch += loss.item()
         self.last_loss = loss.item()
         self.last_loss_dl = loss_dl.mean().item() if self.n_gpu > 0 else loss_dl.item()
@@ -499,6 +779,10 @@ class TaskSpecificCausalDistiller:
                     "train/epoch_ce_loss": self.tr_ce_loss, 
                     "train/epoch_pt_loss": self.tr_pt_loss, 
                     "train/epoch_tr_acc": self.tr_acc, 
+                    
+                    "train/epoch_loss_diito": self.tr_loss_diito, 
+                    "train/epoch_cf_pt_loss": self.tr_cf_pt_loss, 
+                    "train/epoch_tr_cf_loss": self.tr_cf_acc, 
                 }, 
                 step=self.n_total_iter
             )
@@ -586,6 +870,10 @@ class TaskSpecificCausalDistiller:
         self.acc_tr_kd_loss = 0
         self.acc_tr_ce_loss = 0
         self.acc_tr_acc = 0
+    
+        self.acc_tr_loss_diito = 0
+        self.acc_tr_cf_pt_loss = 0
+        self.acc_tr_cf_acc = 0
     
     def save_checkpoint(self, checkpoint_name=None):
         if checkpoint_name == None:

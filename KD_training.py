@@ -27,12 +27,14 @@ from BERT.pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from BERT.pytorch_pretrained_bert.tokenization import BertTokenizer
 
 from distiller import TaskSpecificDistiller
+from causal_distiller import TaskSpecificCausalDistiller
+
 from src.argument_parser import default_parser, get_predefine_argv, complete_argument
 from src.nli_data_processing import processors, output_modes
 from src.data_processing import init_model, get_task_dataloader
 from src.modeling import BertForSequenceClassificationEncoder, FCClassifierForSequenceClassification, FullFCClassifierForSequenceClassification
 from src.utils import load_model, count_parameters, eval_model_dataloader_nli, eval_model_dataloader
-from src.KD_loss import distillation_loss, patience_loss
+from src.KD_loss import distillation_loss, patience_loss, diito_distillation_loss
 from envs import HOME_DATA_FOLDER
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -66,6 +68,7 @@ if DEBUG:
         args = parser.parse_args(argv)
     except NameError:
         raise ValueError('please uncomment one of option above to start training')
+    args.max_training_examples = 1000
 else:
     logger.info("IN CMD MODE")
     args = parser.parse_args()
@@ -199,7 +202,7 @@ logger.info('num parameters in student model are %d and %d' % (count_parameters(
 # In[ ]:
 
 
-distiller = TaskSpecificDistiller(
+distiller = TaskSpecificCausalDistiller(
     args, 
     train_dataloader, eval_dataloader, 
     eval_label_ids, num_labels, output_mode,

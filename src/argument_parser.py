@@ -185,6 +185,12 @@ def default_parser():
                         help="DIITO training architecture")
     
     parser.add_argument(
+        "--neuron_mapping",
+        default="full",
+        type=str,
+        help="DIITO neuron mapping.",
+    )
+    parser.add_argument(
         "--interchange_prop",
         default=0.3,
         type=float,
@@ -196,10 +202,7 @@ def default_parser():
         type=int,
         help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all.",
     )
-    parser.add_argument(
-        "--interchange_masked_token_only", 
-        default=False, action="store_true", help="Whether to only interchange with the masked tokens."
-    )
+
     parser.add_argument(
         "--interchange_consecutive_only", 
         default=False, action="store_true", help="Whether to only interchange consecutive tokens."
@@ -262,6 +265,14 @@ def complete_argument(
         output_name = args.kd_model + '_' + args.task_name + '_nlayer.' + str(args.student_hidden_layers)
     output_name += '_lr.' + str(args.learning_rate) + '_T.' + str(args.T) + '_alpha.' + str(args.alpha)
     output_name += '_beta.' + str(args.beta) + '_bs.' + str(args.train_batch_size)
+    output_name += '_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}'.format(
+            args.is_diito,
+            args.neuron_mapping,
+            args.interchange_prop,
+            args.interchange_max_token,
+            args.interchange_consecutive_only,
+            args.data_augment
+        )
     args.output_dir = os.path.join(args.output_dir, output_name)
     args.run_name = output_name
 
