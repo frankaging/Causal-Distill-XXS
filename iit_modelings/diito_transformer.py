@@ -15,6 +15,56 @@ class InterventionableEncoder():
     
     def eval(self):
         return self.model.eval()
+    
+    def forward_data_augment(
+        self, 
+        source, base, 
+        source_mask, base_mask,
+    ):
+        # source out
+        source_input_ids, source_segment_ids, source_input_mask = source
+        source_outputs, _ = self.model(
+            input_ids=source_input_ids, 
+            token_type_ids=source_segment_ids, 
+            attention_mask=source_input_mask,
+            source_intervention_mask=None, 
+            base_intervention_mask=None, # this is a getter
+            intervention_activations=None,
+            intervention_coords=None,
+        )
+
+        # base out
+        base_input_ids, base_segment_ids, base_input_mask = base
+        base_outputs, _ = self.model(
+            input_ids=base_input_ids, 
+            token_type_ids=base_segment_ids, 
+            attention_mask=base_input_mask,
+            source_intervention_mask=None,
+            base_intervention_mask=None, 
+            intervention_activations=None,
+            intervention_coords=None,
+        )
+    
+        # source -> base data augment
+        augmented_input_ids = base_input_ids.clone()
+        augmented_segment_ids = base_segment_ids.clone()
+        augmented_input_mask = base_input_mask.clone()
+        augmented_input_ids[base_mask] = source_input_ids[source_mask]
+        augmented_segment_ids[base_mask] = source_segment_ids[source_mask]
+        augmented_input_mask[base_mask] = source_input_mask[source_mask]
+        
+        # source -> base intervention
+        counterfactual_outputs, _ = self.model(
+            input_ids=base_input_ids, 
+            token_type_ids=base_segment_ids, 
+            attention_mask=base_input_mask,
+            source_intervention_mask=None,
+            base_intervention_mask=None, 
+            intervention_activations=None,
+            intervention_coords=None,
+        )
+        
+        return source_outputs, base_outputs, counterfactual_outputs
         
     def forward(
         self, 

@@ -176,7 +176,7 @@ def eval_model_dataloader(encoder_bert, classifier, dataloader, device, detailed
             else:
                 feat = encoder_bert(input_ids, segment_ids, input_mask)
                 if isinstance(feat, tuple):
-                    feat, pooled_feat = feat
+                    (feat, pooled_feat), _ = feat
                     if use_pooled_output:
                         preds = classifier(pooled_feat)
                     else:
@@ -251,7 +251,7 @@ def eval_model_dataloader_nli(task_name, eval_label_ids, encoder_bert, classifie
         label_ids = label_ids.to(device)
 
         with torch.no_grad():
-            full_output, pooled_output = encoder_bert(input_ids, segment_ids, input_mask)
+            (full_output, pooled_output), _ = encoder_bert(input_ids, segment_ids, input_mask)
             if kd_model.lower() in['kd', 'kd.cls']:
                 logits = classifier(pooled_output)
             elif kd_model.lower() == 'kd.full':

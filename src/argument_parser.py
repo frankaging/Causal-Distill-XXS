@@ -164,15 +164,12 @@ def default_parser():
                         type=boolean_string,
                         help="normalize patience or not")
     # Distillation related parameters
-    parser.add_argument("--do_train",
-                        default=False,
-                        type=boolean_string,
-                        help="do training or not")
-
-    parser.add_argument("--do_eval",
-                        default=False,
-                        type=boolean_string,
-                        help="do evaluation during training or not")
+    parser.add_argument(
+        "--do_train", default=False, action="store_true", help="do training or not"
+    )
+    parser.add_argument(
+        "--do_eval", default=False, action="store_true", help="do evaluation during training or not"
+    )
     
     # causal distillation related parameters.
     parser.add_argument(
@@ -208,6 +205,9 @@ def default_parser():
     )
     parser.add_argument(
         "--data_augment", default=False, action="store_true", help="Whether to experiment with data augmentation"
+    )
+    parser.add_argument(
+        "--data_pair", default=False, action="store_true", help="Whether to experiment with data pairing"
     )
     
     parser.add_argument(
@@ -263,13 +263,14 @@ def complete_argument(
         output_name = args.kd_model + '_' + args.task_name + '_nlayer.' + str(args.student_hidden_layers)
     output_name += '_lr.' + str(args.learning_rate) + '_T.' + str(args.T) + '_alpha.' + str(args.alpha)
     output_name += '_beta.' + str(args.beta) + '_bs.' + str(args.train_batch_size)
-    output_name += '_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_maxex.{}'.format(
+    output_name += '_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_dtpair.{}_maxex.{}'.format(
             args.is_diito,
             args.neuron_mapping,
             args.interchange_prop,
             args.interchange_max_token,
             args.interchange_consecutive_only,
             args.data_augment,
+            args.data_pair,
             args.max_training_examples,
         )
     args.output_dir = os.path.join(args.output_dir, output_name)

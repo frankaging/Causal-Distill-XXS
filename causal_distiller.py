@@ -55,7 +55,7 @@ class TaskSpecificCausalDistiller:
         
         self.params = params
         
-        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_maxex.{}'.format(
+        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_dtpair.{}_maxex.{}'.format(
             self.params.task_name, 
             self.params.student_hidden_layers,
             self.params.learning_rate,
@@ -69,6 +69,7 @@ class TaskSpecificCausalDistiller:
             self.params.interchange_max_token,
             self.params.interchange_consecutive_only,
             self.params.data_augment,
+            self.params.data_pair,
             self.params.max_training_examples,
         )
         
@@ -108,6 +109,7 @@ class TaskSpecificCausalDistiller:
         self.interchange_masked_token_only = False # this is not supported.
         self.interchange_consecutive_only = params.interchange_consecutive_only
         self.data_augment = params.data_augment
+        self.data_pair = params.data_pair
         
         # models
         self.student_encoder = student_encoder
@@ -256,8 +258,8 @@ class TaskSpecificCausalDistiller:
             dual_input_mask = dual_input_mask[causal_sort_index]
             dual_segment_ids = dual_segment_ids[causal_sort_index]
             dual_label_ids = dual_label_ids[causal_sort_index]
-            return input_ids, input_mask, segment_ids, label_ids, \
-                dual_input_ids, dual_input_mask, dual_segment_ids, dual_label_ids
+            return dual_input_ids, dual_input_mask, dual_segment_ids, dual_label_ids, \
+                input_ids, input_mask, segment_ids, label_ids
         else:
             return input_ids, input_mask, segment_ids, label_ids
     
@@ -289,6 +291,10 @@ class TaskSpecificCausalDistiller:
                     self.step_diito(
                         *prepared_batch
                     )
+                elif self.is_diito:
+                    pass
+                elif self.is_diito:
+                    pass
                 else:
                     self.step(
                         *prepared_batch
@@ -372,6 +378,211 @@ class TaskSpecificCausalDistiller:
 
         return interchange_mask, dual_interchange_mask
     
+    def step_data_pair(
+        self,
+        source_input_ids,
+        source_input_mask,
+        source_segment_ids,
+        source_label_ids,
+        base_input_ids,
+        base_input_mask,
+        base_segment_ids,
+        base_label_ids,
+    ):
+        self.step(
+            base_input_ids,
+            base_input_mask,
+            base_segment_ids,
+            base_label_ids,
+            skip_update_iter=True,
+        )
+        self.step(
+            source_input_ids,
+            source_input_mask,
+            source_segment_ids,
+            source_label_ids,
+        )
+        # two examples but only update once.
+    
+    def step_data_augment(
+        self,
+        source_input_ids,
+        source_input_mask,
+        source_segment_ids,
+        source_label_ids,
+        base_input_ids,
+        base_input_mask,
+        base_segment_ids,
+        base_label_ids,
+    ):
+        source_intervention_mask, base_intervention_mask = self.prepare_interchange_mask(
+            source_input_mask.sum(dim=-1), base_input_mask.sum(dim=-1),
+            source_input_mask, base_input_mask,
+        )
+        student_invention_layer = random.choice(list(self.layer_mapping.keys()))
+        teacher_invention_layer = self.layer_mapping[student_invention_layer]
+
+        ##########
+        # teacher
+        with torch.no_grad():
+            if self.alpha == 0:
+                teacher_pred, teacher_patience = None, None
+            else:
+                _, teacher_base_outputs, teacher_counterfactual_outputs = \
+                    self.teacher_encoder.forward_data_augment(
+                        source=[
+                            source_input_ids, source_segment_ids, source_input_mask, 
+                        ],
+                        base=[
+                            base_input_ids, base_segment_ids, base_input_mask,
+                        ],
+                        source_mask=source_intervention_mask, 
+                        base_mask=base_intervention_mask,
+                    )
+                full_output_teacher, pooled_output_teacher = teacher_base_outputs
+                cf_full_output_teacher, cf_pooled_output_teacher = teacher_counterfactual_outputs
+                
+                if self.kd_model.lower() in['kd', 'kd.cls']:
+                    
+                    teacher_pred = self.teacher_classifier(pooled_output_teacher)
+                    cf_teacher_pred = self.teacher_classifier(cf_pooled_output_teacher)
+                    
+                    if self.kd_model.lower() == 'kd.cls':
+                        
+                        teacher_patience = torch.stack(full_output_teacher[:-1]).transpose(0, 1)
+                        cf_teacher_patience = torch.stack(cf_full_output_teacher[:-1]).transpose(0, 1)
+                        if self.fp16:
+                            teacher_patience = teacher_patience.half()
+                            cf_teacher_patience = cf_teacher_patience.half()
+                        layer_index = [int(i) for i in self.fc_layer_idx.split(',')]
+                        teacher_patience = torch.stack(
+                            [torch.FloatTensor(teacher_patience[:,int(i)]) for i in layer_index]
+                        ).transpose(0, 1)
+                        cf_teacher_patience = torch.stack(
+                            [torch.FloatTensor(cf_teacher_patience[:,int(i)]) for i in layer_index]
+                        ).transpose(0, 1)
+                        
+                    else:
+                        teacher_patience = None
+                        cf_teacher_patience = None
+                else:
+                    raise ValueError(f'{self.kd_model} not implemented yet')
+                if self.fp16:
+                    teacher_pred = teacher_pred.half()
+                    cf_teacher_pred = cf_teacher_pred.half()
+        
+        
+        ##########
+        # student
+        _, student_base_outputs, student_counterfactual_outputs = \
+            self.student_encoder.forward_data_augment(
+                source=[
+                    source_input_ids, source_segment_ids, source_input_mask, 
+                ],
+                base=[
+                    base_input_ids, base_segment_ids, base_input_mask,
+                ],
+                source_mask=source_intervention_mask, 
+                base_mask=base_intervention_mask,
+            )
+        full_output_student, pooled_output_student = student_base_outputs
+        cf_full_output_student, cf_pooled_output_student = student_counterfactual_outputs
+        
+        if self.kd_model.lower() in['kd', 'kd.cls']:
+            logits_pred_student = self.student_classifier(
+                pooled_output_student
+            )
+            cf_logits_pred_student = self.student_classifier(
+                cf_pooled_output_student
+            )
+            if self.kd_model.lower() == 'kd.cls':
+                student_patience = torch.stack(full_output_student[:-1]).transpose(0, 1)
+                cf_student_patience = torch.stack(cf_full_output_student[:-1]).transpose(0, 1)
+            else:
+                student_patience = None
+                cf_student_patience = None
+        else:
+            raise ValueError(f'{self.kd_model} not implemented yet')
+        
+        # calculate loss, along with counterfactual loss
+        loss_dl, kd_loss, ce_loss = distillation_loss(
+            logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
+        )
+        loss_diito = diito_distillation_loss(
+            logits_pred_student, teacher_pred, T=self.T, alpha=self.alpha
+        )
+        
+        if self.beta > 0:
+            if student_patience.shape[0] != input_ids.shape[0]:
+                # For RACE
+                n_layer = student_patience.shape[1]
+                student_patience = student_patience.transpose(0, 1).contiguous().view(
+                    n_layer, input_ids.shape[0], -1
+                ).transpose(0,1)
+                cf_student_patience = cf_student_patience.transpose(0, 1).contiguous().view(
+                    n_layer, input_ids.shape[0], -1
+                ).transpose(0,1)
+            pt_loss = self.beta * patience_loss(
+                teacher_patience, student_patience, 
+                self.normalize_patience
+            )
+            cf_pt_loss = self.beta * patience_loss(
+                cf_teacher_patience, cf_student_patience, 
+                self.normalize_patience
+            )
+            loss = loss_dl + pt_loss + cf_pt_loss + loss_diito
+        else:
+            pt_loss = torch.tensor(0.0)
+            cf_pt_loss = torch.tensor(0.0)
+            loss = loss_dl + loss_diito
+        if self.n_gpu > 1:
+            loss = loss.mean()  # mean() to average on multi-gpu.
+        
+        # last standard loss
+        self.total_loss_epoch += loss.item()
+        self.last_loss = loss.item()
+        self.last_loss_dl = loss_dl.mean().item() if self.n_gpu > 0 else loss_dl.item()
+        self.last_kd_loss = kd_loss.mean().item() if self.n_gpu > 0 else kd_loss.item()
+        self.last_ce_loss = ce_loss.mean().item() if self.n_gpu > 0 else ce_loss.item()
+        self.last_pt_loss = pt_loss.mean().item() if self.n_gpu > 0 else pt_loss.item()
+        # last cf loss
+        self.last_loss_diito = loss_diito.mean().item() if self.n_gpu > 0 else loss_diito.item()
+        self.last_cf_pt_loss = cf_pt_loss.mean().item() if self.n_gpu > 0 else cf_pt_loss.item()
+        
+        # epoch standard loss
+        n_sample = source_input_ids.shape[0]
+        self.acc_tr_loss += self.last_loss * n_sample
+        self.acc_tr_kd_loss += self.last_kd_loss * n_sample
+        self.acc_tr_ce_loss += self.last_ce_loss * n_sample
+        self.acc_tr_pt_loss = self.last_pt_loss * n_sample
+        # epoch cf loss
+        self.acc_tr_loss_diito += self.last_loss_diito * n_sample
+        self.acc_tr_cf_pt_loss = self.last_cf_pt_loss * n_sample
+        
+        # pred acc
+        pred_cls = logits_pred_student.data.max(1)[1]
+        self.acc_tr_acc += pred_cls.eq(source_label_ids).sum().cpu().item()
+        # cf pred acc
+        cf_pred_cls_student = cf_logits_pred_student.data.max(1)[1]
+        cf_pred_cls_teacher = cf_teacher_pred.data.max(1)[1]
+        self.acc_tr_cf_acc += cf_pred_cls_student.eq(cf_pred_cls_teacher).sum().cpu().item()
+        
+        self.n_sequences_epoch += n_sample
+        
+        # standard acc metrics
+        self.tr_loss = self.acc_tr_loss / self.n_sequences_epoch
+        self.tr_kd_loss = self.acc_tr_kd_loss / self.n_sequences_epoch
+        self.tr_ce_loss = self.acc_tr_ce_loss / self.n_sequences_epoch
+        self.tr_pt_loss = self.acc_tr_pt_loss / self.n_sequences_epoch
+        self.tr_acc = self.acc_tr_acc / self.n_sequences_epoch
+        
+        # cf acc metrics
+        self.tr_loss_diito = self.acc_tr_loss_diito / self.n_sequences_epoch
+        self.tr_cf_pt_loss = self.acc_tr_cf_pt_loss / self.n_sequences_epoch
+        self.tr_cf_acc = self.acc_tr_cf_acc / self.n_sequences_epoch
+              
+        self.optimize(loss)
+    
     def step_diito(
         self,
         source_input_ids,
@@ -395,7 +606,7 @@ class TaskSpecificCausalDistiller:
             if self.alpha == 0:
                 teacher_pred, teacher_patience = None, None
             else:
-                teacher_source_outputs, _, teacher_counterfactual_outputs = \
+                _, teacher_base_outputs, teacher_counterfactual_outputs = \
                     self.teacher_encoder.forward(
                         source=[
                             source_input_ids, source_segment_ids, source_input_mask, 
@@ -407,7 +618,7 @@ class TaskSpecificCausalDistiller:
                         base_mask=base_intervention_mask,
                         coords=teacher_invention_layer,
                     )
-                full_output_teacher, pooled_output_teacher = teacher_source_outputs
+                full_output_teacher, pooled_output_teacher = teacher_base_outputs
                 cf_full_output_teacher, cf_pooled_output_teacher = teacher_counterfactual_outputs
                 
                 if self.kd_model.lower() in['kd', 'kd.cls']:
@@ -441,7 +652,7 @@ class TaskSpecificCausalDistiller:
         
         ##########
         # student
-        student_source_outputs, _, student_counterfactual_outputs = \
+        _, student_base_outputs, student_counterfactual_outputs = \
             self.student_encoder.forward(
                 source=[
                     source_input_ids, source_segment_ids, source_input_mask, 
@@ -453,7 +664,7 @@ class TaskSpecificCausalDistiller:
                 base_mask=base_intervention_mask,
                 coords=[student_invention_layer],
             )
-        full_output_student, pooled_output_student = student_source_outputs
+        full_output_student, pooled_output_student = student_base_outputs
         cf_full_output_student, cf_pooled_output_student = student_counterfactual_outputs
         
         if self.kd_model.lower() in['kd', 'kd.cls']:
@@ -557,6 +768,7 @@ class TaskSpecificCausalDistiller:
         input_mask,
         segment_ids,
         label_ids,
+        skip_update_iter=False,
     ):
         # teacher no_grad() forward pass.
         with torch.no_grad():
@@ -564,7 +776,7 @@ class TaskSpecificCausalDistiller:
                 teacher_pred, teacher_patience = None, None
             else:
                 # define a new function to compute loss values for both output_modes
-                full_output_teacher, pooled_output_teacher = self.teacher_encoder(
+                (full_output_teacher, pooled_output_teacher), _ = self.teacher_encoder(
                     input_ids, segment_ids, input_mask
                 )
                 if self.kd_model.lower() in['kd', 'kd.cls']:
@@ -585,7 +797,7 @@ class TaskSpecificCausalDistiller:
                     teacher_pred = teacher_pred.half()
             
         # student with_grad() forward pass.
-        full_output_student, pooled_output_student = self.student_encoder(
+        (full_output_student, pooled_output_student), _ = self.student_encoder(
             input_ids, segment_ids, input_mask
         )
         if self.kd_model.lower() in['kd', 'kd.cls']:
@@ -644,9 +856,9 @@ class TaskSpecificCausalDistiller:
         self.tr_pt_loss = self.acc_tr_pt_loss / self.n_sequences_epoch
         self.tr_acc = self.acc_tr_acc / self.n_sequences_epoch
               
-        self.optimize(loss)
+        self.optimize(loss, skip_update_iter=skip_update_iter)
             
-    def optimize(self, loss):
+    def optimize(self, loss, skip_update_iter=False):
         if self.gradient_accumulation_steps > 1:
             loss = loss / self.gradient_accumulation_steps
         
@@ -655,8 +867,9 @@ class TaskSpecificCausalDistiller:
             self.optimizer.backward(loss)
         else:
             loss.backward()
-
-        self.iter()
+        
+        if not skip_update_iter:
+            self.iter()
 
         if self.n_iter % self.gradient_accumulation_steps == 0:
             if self.fp16:
@@ -750,18 +963,32 @@ class TaskSpecificCausalDistiller:
         # let us do evaluation on the eval just for bookkeeping.
         # make sure this is not intervening your training in anyway
         # otherwise, data is leaking!
-        if 'race' in self.task_name:
-            result = eval_model_dataloader(
-                self.student_encoder, self.student_classifier, 
-                self.eval_dataset, self.device, False
-            )
+        if self.is_diito:
+            if 'race' in self.task_name:
+                result = eval_model_dataloader(
+                    self.student_encoder.model, self.student_classifier, 
+                    self.eval_dataset, self.device, False
+                )
+            else:
+                result = eval_model_dataloader_nli(
+                    self.task_name.lower(), self.eval_label_ids, 
+                    self.student_encoder.model, self.student_classifier, self.eval_dataset,
+                    self.kd_model, self.num_labels, self.device, 
+                    self.weights, self.fc_layer_idx, self.output_mode
+                )
         else:
-            result = eval_model_dataloader_nli(
-                self.task_name.lower(), self.eval_label_ids, 
-                self.student_encoder, self.student_classifier, self.eval_dataset,
-                self.kd_model, self.num_labels, self.device, 
-                self.weights, self.fc_layer_idx, self.output_mode
-            )
+            if 'race' in self.task_name:
+                result = eval_model_dataloader(
+                    self.student_encoder, self.student_classifier, 
+                    self.eval_dataset, self.device, False
+                )
+            else:
+                result = eval_model_dataloader_nli(
+                    self.task_name.lower(), self.eval_label_ids, 
+                    self.student_encoder, self.student_classifier, self.eval_dataset,
+                    self.kd_model, self.num_labels, self.device, 
+                    self.weights, self.fc_layer_idx, self.output_mode
+                )
         log_eval = open(os.path.join(self.output_dir, 'eval_log.txt'), 'a', buffering=1)
         if self.task_name in ['CoLA']:
             print('{},{},{}'.format(self.epoch+1, result['mcc'], result['eval_loss']), file=log_eval)
