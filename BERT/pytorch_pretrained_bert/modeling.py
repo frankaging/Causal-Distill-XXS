@@ -406,8 +406,8 @@ class BertEncoder(nn.Module):
         intervention_activations=None,
         intervention_coords=None,
     ):
-        assert source_intervention_mask == None
         if base_intervention_mask != None:
+            assert source_intervention_mask != None
             assert intervention_activations != None
             assert intervention_coords != None
         
@@ -418,8 +418,9 @@ class BertEncoder(nn.Module):
                 hidden_states, attention_mask,
             )
             # interchange point!
-            if layer_index in intervention_coords:
-                hidden_states[base_intervention_mask] = intervention_activations[layer_index]
+            if intervention_activations != None:
+                if layer_index in intervention_coords:
+                    hidden_states[base_intervention_mask] = intervention_activations[layer_index][source_intervention_mask]
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
             layer_index += 1
@@ -722,8 +723,7 @@ class BertModel(BertPreTrainedModel):
         intervention_activations=None,
         intervention_coords=None,
     ):
-        assert source_intervention_mask == None
-        
+  
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:

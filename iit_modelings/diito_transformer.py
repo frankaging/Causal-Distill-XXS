@@ -10,39 +10,48 @@ class InterventionableEncoder():
         self.model = model
         self.is_cuda = next(self.model.parameters()).is_cuda
 
+    def train(self):
+        return self.model.train()
+    
+    def eval(self):
+        return self.model.eval()
+        
     def forward(
         self, 
         source, base, 
         source_mask, base_mask, 
         coords:list
     ):
+        # source out + activation
         source_input_ids, source_segment_ids, source_input_mask = source
         source_outputs, intervention_activations = self.model(
             input_ids=source_input_ids, 
             token_type_ids=source_segment_ids, 
-            attention_mask=source_input_mask
+            attention_mask=source_input_mask,
             source_intervention_mask=source_mask, 
             base_intervention_mask=None, # this is a getter
             intervention_activations=None,
             intervention_coords=coords,
         )
 
+        # base out
         base_input_ids, base_segment_ids, base_input_mask = base
         base_outputs, _ = self.model(
             input_ids=base_input_ids, 
             token_type_ids=base_segment_ids, 
             attention_mask=base_input_mask,
-            source_intervention_mask=None, # this is a setter
+            source_intervention_mask=None,
             base_intervention_mask=None, 
             intervention_activations=None,
             intervention_coords=None,
         )
         
+        # source -> base intervention
         counterfactual_outputs, _ = self.model(
             input_ids=base_input_ids, 
             token_type_ids=base_segment_ids, 
             attention_mask=base_input_mask,
-            source_intervention_mask=None, # this is a setter
+            source_intervention_mask=source_mask,
             base_intervention_mask=base_mask, 
             intervention_activations=intervention_activations,
             intervention_coords=coords,

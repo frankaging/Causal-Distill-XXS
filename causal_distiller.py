@@ -55,7 +55,7 @@ class TaskSpecificCausalDistiller:
         
         self.params = params
         
-        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}'.format(
+        self.output_model_file = '{}_nlayer.{}_lr.{}_T.{}.alpha.{}_beta.{}_bs.{}_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_maxex.{}'.format(
             self.params.task_name, 
             self.params.student_hidden_layers,
             self.params.learning_rate,
@@ -68,7 +68,8 @@ class TaskSpecificCausalDistiller:
             self.params.interchange_prop,
             self.params.interchange_max_token,
             self.params.interchange_consecutive_only,
-            self.params.data_augment
+            self.params.data_augment,
+            self.params.max_training_examples,
         )
         
         self.train_dataset = train_dataset

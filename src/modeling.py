@@ -127,40 +127,36 @@ class BertForSequenceClassificationEncoder(BertPreTrainedModel):
         intervention_activations=None,
         intervention_coords=None,
     ):
-        # simple validation
-        assert (source_intervention_mask!=None and base_intervention_mask!=None) == False
-        assert (source_intervention_mask!=None and base_intervention_mask!=None) == False
-        
         return_activations = None
         if self.output_all_encoded_layers:
             full_output, pooled_output = self.bert(
                 input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True,
                 # diito packets
-                source_intervention_mask=None, # never need to get inside
+                source_intervention_mask=source_intervention_mask,
                 base_intervention_mask=base_intervention_mask, 
                 intervention_activations=intervention_activations,
                 intervention_coords=intervention_coords,
             )
-            if source_intervention_mask != None:
-                # we need to return the activation in a list?
+            if source_intervention_mask != None and base_intervention_mask == None:
+                # activation getter!
                 return_activations = {}
                 for coord in intervention_coords:
-                    return_activations[coord] = full_output[coord][source_intervention_mask]
+                    return_activations[coord] = full_output[coord] # we return full so batch dim can be sliced.
             return ([full_output[i][:, 0] for i in range(len(full_output))], pooled_output), return_activations
         else:
-            _, pooled_output = self.bert(
-                input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False,
+            full_output, pooled_output = self.bert(
+                input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True,
                 # diito packets
-                source_intervention_mask=None, # never need to get inside
+                source_intervention_mask=source_intervention_mask,
                 base_intervention_mask=base_intervention_mask, 
                 intervention_activations=intervention_activations,
                 intervention_coords=intervention_coords,
             )
-            if source_intervention_mask != None:
-                # we need to return the activation in a list?
+            if source_intervention_mask != None and base_intervention_mask == None:
+                # activation getter!
                 return_activations = {}
                 for coord in intervention_coords:
-                    return_activations[coord] = full_output[coord][source_intervention_mask]
+                    return_activations[coord] = full_output[coord] # we return full so batch dim can be sliced.
             return (None, pooled_output), return_activations
 
 

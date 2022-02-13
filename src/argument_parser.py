@@ -175,10 +175,9 @@ def default_parser():
                         help="do evaluation during training or not")
     
     # causal distillation related parameters.
-    parser.add_argument("--is_diito",
-                        default=False,
-                        type=boolean_string,
-                        help="Whether to use causal distillation")
+    parser.add_argument(
+        "--is_diito", default=False, action="store_true", help="Whether to use causal distillation"
+    )
     parser.add_argument("--diito_type",
                         default="random",
                         type=str,
@@ -194,27 +193,26 @@ def default_parser():
         "--interchange_prop",
         default=0.3,
         type=float,
-        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all.",
+        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all",
     )
     parser.add_argument(
         "--interchange_max_token",
         default=-1,
         type=int,
-        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all.",
+        help="Ratio of tokens to mask for interchange interventions. 1.0 means interchange all",
     )
 
     parser.add_argument(
         "--interchange_consecutive_only", 
-        default=False, action="store_true", help="Whether to only interchange consecutive tokens."
+        default=False, action="store_true", help="Whether to only interchange consecutive tokens"
     )
     parser.add_argument(
-        "--data_augment", default=False, action="store_true", help="Whether to experiment with data augmentation."
+        "--data_augment", default=False, action="store_true", help="Whether to experiment with data augmentation"
     )
     
-    parser.add_argument("--is_wandb",
-                        default=False,
-                        type=boolean_string,
-                        help="Whether to use wandb to report metrics to")
+    parser.add_argument(
+        "--is_wandb", default=False, action="store_true", help="Whether to use wandb to report metrics to"
+    )
     parser.add_argument("--wandb_metadata",
                         default="",
                         type=str,
@@ -265,13 +263,14 @@ def complete_argument(
         output_name = args.kd_model + '_' + args.task_name + '_nlayer.' + str(args.student_hidden_layers)
     output_name += '_lr.' + str(args.learning_rate) + '_T.' + str(args.T) + '_alpha.' + str(args.alpha)
     output_name += '_beta.' + str(args.beta) + '_bs.' + str(args.train_batch_size)
-    output_name += '_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}'.format(
+    output_name += '_diito.{}_nm.{}_intprop.{}_intmax.{}_intconsec.{}_dtaug.{}_maxex.{}'.format(
             args.is_diito,
             args.neuron_mapping,
             args.interchange_prop,
             args.interchange_max_token,
             args.interchange_consecutive_only,
-            args.data_augment
+            args.data_augment,
+            args.max_training_examples,
         )
     args.output_dir = os.path.join(args.output_dir, output_name)
     args.run_name = output_name
