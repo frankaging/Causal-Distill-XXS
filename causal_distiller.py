@@ -879,6 +879,9 @@ class TaskSpecificCausalDistiller:
                 )
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = self.lr_this_step
+            else:
+                self.lr_this_step = self.optimizer.get_lr()
+                    
             self.optimizer.step()
             self.optimizer.zero_grad()
     
