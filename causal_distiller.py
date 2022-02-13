@@ -100,6 +100,7 @@ class TaskSpecificCausalDistiller:
         self.num_train_epochs = params.num_train_epochs
         self.gradient_accumulation_steps = params.gradient_accumulation_steps
         self.loss_scale = params.loss_scale
+        self.gamma = 0.3 # diito coefficient?
         
         # DIITO params
         self.is_diito = params.is_diito
@@ -110,6 +111,11 @@ class TaskSpecificCausalDistiller:
         self.interchange_consecutive_only = params.interchange_consecutive_only
         self.data_augment = params.data_augment
         self.data_pair = params.data_pair
+        
+        logger.warning('training flags:')
+        logger.warning(f'is_diito={self.is_diito}')
+        logger.warning(f'data_augment={self.data_augment}')
+        logger.warning(f'data_pair={self.data_pair}')
         
         # models
         self.student_encoder = student_encoder
@@ -137,8 +143,8 @@ class TaskSpecificCausalDistiller:
             self.teacher_encoder = torch.nn.DataParallel(self.teacher_encoder)
             self.teacher_classifier = torch.nn.DataParallel(self.teacher_classifier)
 
-        # make the model interventionable if diito is enabled.
-        if self.is_diito:
+        # make the model interventionable if diito or data augment is enabled.
+        if self.is_diito or self.data_augment:
             self.student_encoder = InterventionableEncoder(self.student_encoder)
             self.teacher_encoder = InterventionableEncoder(self.teacher_encoder)
             try:
@@ -247,7 +253,7 @@ class TaskSpecificCausalDistiller:
         # DIITO related params that report to tensorboard
     
     def prepare_batch(self, input_ids, input_mask, segment_ids, label_ids, ):
-        if self.is_diito:
+        if self.is_diito or self.data_augment or self.data_pair:
             dual_input_ids = input_ids.clone()
             dual_input_mask = input_mask.clone()
             dual_segment_ids = segment_ids.clone()
@@ -291,10 +297,14 @@ class TaskSpecificCausalDistiller:
                     self.step_diito(
                         *prepared_batch
                     )
-                elif self.is_diito:
-                    pass
-                elif self.is_diito:
-                    pass
+                elif self.data_augment:
+                    self.step_data_augment(
+                        *prepared_batch
+                    )
+                elif self.data_pair:
+                    self.step_data_pair(
+                        *prepared_batch
+                    )
                 else:
                     self.step(
                         *prepared_batch
@@ -509,7 +519,7 @@ class TaskSpecificCausalDistiller:
             logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
         )
         loss_diito = diito_distillation_loss(
-            logits_pred_student, teacher_pred, T=self.T, alpha=self.alpha
+            cf_logits_pred_student, cf_teacher_pred, T=self.T, alpha=self.alpha
         )
         
         if self.beta > 0:
@@ -687,8 +697,9 @@ class TaskSpecificCausalDistiller:
         loss_dl, kd_loss, ce_loss = distillation_loss(
             logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
         )
-        loss_diito = diito_distillation_loss(
-            logits_pred_student, teacher_pred, T=self.T, alpha=self.alpha
+        
+        loss_diito = self.gamma * diito_distillation_loss(
+            cf_logits_pred_student, cf_teacher_pred, T=self.T, alpha=self.alpha
         )
         
         if self.beta > 0:
@@ -943,7 +954,7 @@ class TaskSpecificCausalDistiller:
                     
                     "train/epoch_loss_diito": self.tr_loss_diito, 
                     "train/epoch_cf_pt_loss": self.tr_cf_pt_loss, 
-                    "train/epoch_tr_cf_loss": self.tr_cf_acc, 
+                    "train/epoch_tr_cf_acc": self.tr_cf_acc, 
                 }, 
                 step=self.n_total_iter
             )
@@ -966,7 +977,7 @@ class TaskSpecificCausalDistiller:
         # let us do evaluation on the eval just for bookkeeping.
         # make sure this is not intervening your training in anyway
         # otherwise, data is leaking!
-        if self.is_diito:
+        if self.is_diito or self.data_augment:
             if 'race' in self.task_name:
                 result = eval_model_dataloader(
                     self.student_encoder.model, self.student_classifier, 
@@ -1051,10 +1062,16 @@ class TaskSpecificCausalDistiller:
         self.acc_tr_cf_acc = 0
     
     def save_checkpoint(self, checkpoint_name=None):
+        encoder_model_path = None
+        if self.is_diito or self.data_augment:
+            encoder_model_path = self.student_encoder.model
+        else:
+            encoder_model_path = self.student_encoder
+        
         if checkpoint_name == None:
             if self.n_gpu > 1:
                 torch.save(
-                    self.student_encoder.module.state_dict(), 
+                    encoder_model_path.module.state_dict(), 
                     os.path.join(self.output_dir, self.output_model_file + f'_e.{self.epoch}.encoder.pkl')
                 )
                 torch.save(
@@ -1063,7 +1080,7 @@ class TaskSpecificCausalDistiller:
                 )
             else:
                 torch.save(
-                    self.student_encoder.state_dict(), 
+                    encoder_model_path.state_dict(), 
                     os.path.join(self.output_dir, self.output_model_file + f'_e.{self.epoch}.encoder.pkl')
                 )
                 torch.save(
@@ -1073,7 +1090,7 @@ class TaskSpecificCausalDistiller:
         else:
             if self.n_gpu > 1:
                 torch.save(
-                    self.student_encoder.module.state_dict(), 
+                    encoder_model_path.module.state_dict(), 
                     os.path.join(self.output_dir, "encoder."+checkpoint_name)
                 )
                 torch.save(
@@ -1082,7 +1099,7 @@ class TaskSpecificCausalDistiller:
                 )
             else:
                 torch.save(
-                    self.student_encoder.state_dict(), 
+                    encoder_model_path.state_dict(), 
                     os.path.join(self.output_dir, "encoder."+checkpoint_name)
                 )
                 torch.save(
