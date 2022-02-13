@@ -383,7 +383,9 @@ class BertLayer(nn.Module):
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def forward(self, hidden_states, attention_mask):
+    def forward(
+        self, hidden_states, attention_mask,
+    ):
         attention_output = self.attention(hidden_states, attention_mask)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
@@ -396,12 +398,31 @@ class BertEncoder(nn.Module):
         layer = BertLayer(config)
         self.layer = nn.ModuleList([copy.deepcopy(layer) for _ in range(config.num_hidden_layers)])
 
-    def forward(self, hidden_states, attention_mask, output_all_encoded_layers=True):
+    def forward(
+        self, hidden_states, attention_mask, output_all_encoded_layers=True,
+        # diito packets
+        source_intervention_mask=None, 
+        base_intervention_mask=None, 
+        intervention_activations=None,
+        intervention_coords=None,
+    ):
+        assert source_intervention_mask == None
+        if base_intervention_mask != None:
+            assert intervention_activations != None
+            assert intervention_coords != None
+        
         all_encoder_layers = []
+        layer_index = 0
         for layer_module in self.layer:
-            hidden_states = layer_module(hidden_states, attention_mask)
+            hidden_states = layer_module(
+                hidden_states, attention_mask,
+            )
+            # interchange point!
+            if layer_index in intervention_coords:
+                hidden_states[base_intervention_mask] = intervention_activations[layer_index]
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
+            layer_index += 1
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
         return all_encoder_layers
@@ -693,7 +714,16 @@ class BertModel(BertPreTrainedModel):
         self.pooler = BertPooler(config)
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, output_all_encoded_layers=True):
+    def forward(
+        self, input_ids, token_type_ids=None, attention_mask=None, output_all_encoded_layers=True,
+        # diito packets
+        source_intervention_mask=None, 
+        base_intervention_mask=None, 
+        intervention_activations=None,
+        intervention_coords=None,
+    ):
+        assert source_intervention_mask == None
+        
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         if token_type_ids is None:
@@ -715,9 +745,16 @@ class BertModel(BertPreTrainedModel):
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
 
         embedding_output = self.embeddings(input_ids, token_type_ids)
-        encoded_layers = self.encoder(embedding_output,
-                                      extended_attention_mask,
-                                      output_all_encoded_layers=output_all_encoded_layers)
+        encoded_layers = self.encoder(
+            embedding_output,
+            extended_attention_mask,
+            output_all_encoded_layers=output_all_encoded_layers,
+            # diito packets
+            source_intervention_mask=source_intervention_mask, 
+            base_intervention_mask=base_intervention_mask, 
+            intervention_activations=intervention_activations,
+            intervention_coords=intervention_coords,
+        )
         sequence_output = encoded_layers[-1]
         pooled_output = self.pooler(sequence_output)
         if not output_all_encoded_layers:

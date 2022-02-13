@@ -117,13 +117,51 @@ class BertForSequenceClassificationEncoder(BertPreTrainedModel):
         self.output_all_encoded_layers = output_all_encoded_layers
         self.apply(self.init_bert_weights)
 
-    def forward(self, input_ids, token_type_ids=None, attention_mask=None, labels=None):
+    def forward(
+        self, input_ids, 
+        token_type_ids=None, 
+        attention_mask=None, 
+        labels=None,
+        source_intervention_mask=None, 
+        base_intervention_mask=None, 
+        intervention_activations=None,
+        intervention_coords=None,
+    ):
+        # simple validation
+        assert (source_intervention_mask!=None and base_intervention_mask!=None) == False
+        assert (source_intervention_mask!=None and base_intervention_mask!=None) == False
+        
+        return_activations = None
         if self.output_all_encoded_layers:
-            full_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True)
-            return [full_output[i][:, 0] for i in range(len(full_output))], pooled_output
+            full_output, pooled_output = self.bert(
+                input_ids, token_type_ids, attention_mask, output_all_encoded_layers=True,
+                # diito packets
+                source_intervention_mask=None, # never need to get inside
+                base_intervention_mask=base_intervention_mask, 
+                intervention_activations=intervention_activations,
+                intervention_coords=intervention_coords,
+            )
+            if source_intervention_mask != None:
+                # we need to return the activation in a list?
+                return_activations = {}
+                for coord in intervention_coords:
+                    return_activations[coord] = full_output[coord][source_intervention_mask]
+            return ([full_output[i][:, 0] for i in range(len(full_output))], pooled_output), return_activations
         else:
-            _, pooled_output = self.bert(input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False)
-            return None, pooled_output
+            _, pooled_output = self.bert(
+                input_ids, token_type_ids, attention_mask, output_all_encoded_layers=False,
+                # diito packets
+                source_intervention_mask=None, # never need to get inside
+                base_intervention_mask=base_intervention_mask, 
+                intervention_activations=intervention_activations,
+                intervention_coords=intervention_coords,
+            )
+            if source_intervention_mask != None:
+                # we need to return the activation in a list?
+                return_activations = {}
+                for coord in intervention_coords:
+                    return_activations[coord] = full_output[coord][source_intervention_mask]
+            return (None, pooled_output), return_activations
 
 
 class FCClassifierForSequenceClassification(BertPreTrainedModel):

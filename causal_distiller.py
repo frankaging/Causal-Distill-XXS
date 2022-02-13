@@ -20,84 +20,20 @@ from tqdm import tqdm
 from BERT.pytorch_pretrained_bert.modeling import BertConfig
 from BERT.pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 from BERT.pytorch_pretrained_bert.tokenization import BertTokenizer
+from iit_modelings.diito_transformer import InterventionableEncoder
 
 from src.argument_parser import default_parser, get_predefine_argv, complete_argument
 from src.nli_data_processing import processors, output_modes
 from src.data_processing import init_model, get_task_dataloader
 from src.modeling import BertForSequenceClassificationEncoder, FCClassifierForSequenceClassification, FullFCClassifierForSequenceClassification
 from src.utils import load_model, count_parameters, eval_model_dataloader_nli, eval_model_dataloader
-from src.KD_loss import distillation_loss, patience_loss
+from src.KD_loss import distillation_loss, patience_loss, diito_distillation_loss
 from envs import HOME_DATA_FOLDER
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt='%m/%d/%Y %H:%M:%S',
                     level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-class InterventionableEncoder(torch.nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.activation = {}
-        self.model = model
-        self.is_cude = next(self.model.parameters()).is_cuda
-        
-    # these functions are model dependent
-    # they specify how the coordinate system works
-    def _coordinate_to_getter(self, coords):
-        handlers = []
-        for coord in coords:
-            layer, source_mask, _ = coord
-            def hook(model, input, output):
-                self.activation[f'{layer}'] = output[source_mask]
-            if self.is_cude:
-                handler = self.model.module.bert.encoder.layer[layer].output.register_forward_hook(hook)
-            else:
-                handler = self.model.bert.encoder.layer[layer].output.register_forward_hook(hook)
-            handlers += [handler]
-        return handlers
-
-    def _coordinate_to_setter(self, coords):
-        handlers = []
-        for coord in coords:
-            layer, _, base_mask = coord
-            def hook(model, input, output):
-                # NOTE: This might lead to errors about inplace manipulations during the backprop.
-                output[base_mask] = self.activation[f'{layer}']
-            if self.is_cude:
-                handler = self.model.module.bert.encoder.layer[layer].output.register_forward_hook(hook)
-            else:
-                handler = self.model.bert.encoder.layer[layer].output.register_forward_hook(hook)
-            handlers += [handler]
-        return handlers
-
-    def forward(self, source, base, coords):
-        # NOTE: other ways that do not require constantly adding / removing hooks should exist
-
-        # set hook to get activation
-        # get_handler = self.names_to_layers[layer_name].register_forward_hook(self._get_activation(layer_name))
-        get_handlers = self._coordinate_to_getter(coords)
-
-        # get output on source examples (and also capture the activations)
-        source_outputs = self.model(*source)
-
-        # remove the handler (don't store activations on base)
-        for get_handler in get_handlers:
-            get_handler.remove()
-
-        # get base logits
-        base_outputs = self.model(*base)
-        
-        # set hook to do the intervention
-        set_handlers = self._coordinate_to_setter(coords)
-
-        # get counterfactual output on base examples
-        counterfactual_outputs = self.model(*base)
-
-        # remove the handler
-        for set_handler in set_handlers:
-            set_handler.remove()
-
-        return source_outputs, base_outputs, counterfactual_outputs
 
 class TaskSpecificCausalDistiller:
     def __init__(
@@ -162,10 +98,56 @@ class TaskSpecificCausalDistiller:
         self.num_train_epochs = params.num_train_epochs
         self.gradient_accumulation_steps = params.gradient_accumulation_steps
         self.loss_scale = params.loss_scale
-        try:
-            self.teacher_hidden_layers = self.teacher_encoder.config.num_hidden_layers
-        except:
-            self.teacher_hidden_layers = self.teacher_encoder.module.config.num_hidden_layers
+        
+        # DIITO params
+        self.is_diito = params.is_diito
+        self.diito_type = params.diito_type
+        self.interchange_prop = params.interchange_prop
+        self.interchange_max_token = params.interchange_max_token
+        self.interchange_masked_token_only = False # this is not supported.
+        self.interchange_consecutive_only = params.interchange_consecutive_only
+        self.data_augment = params.data_augment
+        
+        # models
+        self.student_encoder = student_encoder
+        self.student_classifier = student_classifier
+        self.teacher_encoder = teacher_encoder
+        self.teacher_classifier = teacher_classifier
+        
+        # getting params to optimize early
+        param_optimizer = list(self.student_encoder.named_parameters())
+        param_optimizer += list(
+            self.student_classifier.named_parameters()
+        )
+        
+        # parallel models
+        self.student_encoder.to(self.device)
+        self.student_classifier.to(self.device)
+        self.teacher_encoder.to(self.device)
+        self.teacher_classifier.to(self.device)
+        if self.local_rank != -1:
+            raise NotImplementedError('not implemented for local_rank != 1')
+        elif self.n_gpu > 1:
+            logger.info('data parallel because more than one gpu for all models')
+            self.student_encoder = torch.nn.DataParallel(self.student_encoder)
+            self.student_classifier = torch.nn.DataParallel(self.student_classifier)
+            self.teacher_encoder = torch.nn.DataParallel(self.teacher_encoder)
+            self.teacher_classifier = torch.nn.DataParallel(self.teacher_classifier)
+
+        # make the model interventionable if diito is enabled.
+        if self.is_diito:
+            self.student_encoder = InterventionableEncoder(self.student_encoder)
+            self.teacher_encoder = InterventionableEncoder(self.teacher_encoder)
+            try:
+                self.teacher_hidden_layers = self.teacher_encoder.model.config.num_hidden_layers
+            except:
+                self.teacher_hidden_layers = self.teacher_encoder.model.module.config.num_hidden_layers
+        else:
+            try:
+                self.teacher_hidden_layers = self.teacher_encoder.config.num_hidden_layers
+            except:
+                self.teacher_hidden_layers = self.teacher_encoder.module.config.num_hidden_layers
+            
         self.student_hidden_layers = params.student_hidden_layers
         self.neuron_mapping = params.neuron_mapping
         self.layer_mapping = {}
@@ -179,41 +161,9 @@ class TaskSpecificCausalDistiller:
             assert False # Not Implemented
         elif self.neuron_mapping == "mid":
             assert False # Not Implemented
-        
-        # DIITO params
-        self.is_diito = params.is_diito
-        self.diito_type = params.diito_type
-        self.interchange_prop = params.interchange_prop
-        self.interchange_max_token = params.interchange_max_token
-        self.interchange_masked_token_only = False # this is not supported.
-        self.interchange_consecutive_only = params.interchange_consecutive_only
-        self.data_augment = params.data_augment
-        
-        if self.is_diito:
-            self.student_encoder = InterventionableEncoder(student_encoder)
-            self.student_classifier = student_classifier
-            self.teacher_encoder = InterventionableEncoder(teacher_encoder)
-            self.teacher_classifier = teacher_classifier
-        else:
-            self.student_encoder = student_encoder
-            self.student_classifier = student_classifier
-            self.teacher_encoder = teacher_encoder
-            self.teacher_classifier = teacher_classifier
-
-        # parallel models
-        self.student_encoder.to(self.device)
-        self.student_classifier.to(self.device)
-        self.teacher_encoder.to(self.device)
-        self.teacher_classifier.to(self.device)
-        
-        if self.local_rank != -1:
-            raise NotImplementedError('not implemented for local_rank != 1')
-        elif self.n_gpu > 1:
-            logger.info('data parallel because more than one gpu for all models')
-            self.student_encoder = torch.nn.DataParallel(self.student_encoder)
-            self.student_classifier = torch.nn.DataParallel(self.student_classifier)
-            self.teacher_encoder = torch.nn.DataParallel(self.teacher_encoder)
-            self.teacher_classifier = torch.nn.DataParallel(self.teacher_classifier)
+        logger.info(f'neuron mapping: {self.neuron_mapping}')
+        logger.info(f'corresponding layer mapping:')
+        logger.info(self.layer_mapping)
 
         # log to a local file
         log_train = open(os.path.join(self.output_dir, 'train_log.txt'), 'w', buffering=1)
@@ -222,12 +172,7 @@ class TaskSpecificCausalDistiller:
         print('epoch,acc,loss', file=log_eval)
         log_train.close()
         log_eval.close()
-    
-        param_optimizer = list(
-            self.student_encoder.named_parameters()
-        ) + list(
-            self.student_classifier.named_parameters()
-        )
+            
         no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
             {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
@@ -319,10 +264,12 @@ class TaskSpecificCausalDistiller:
         global_step = 0
         nb_tr_steps = 0
         tr_loss = 0
+        
         self.student_encoder.train()
-        self.student_classifier.train()
         self.teacher_encoder.eval()
+        self.student_classifier.train()
         self.teacher_classifier.eval()
+        
         self.last_log = time.time()
         
         for epoch in trange(int(self.num_train_epochs), desc="Epoch"):
@@ -448,22 +395,18 @@ class TaskSpecificCausalDistiller:
                 teacher_pred, teacher_patience = None, None
             else:
                 teacher_source_outputs, _, teacher_counterfactual_outputs = \
-                    self.teacher_encoder(
+                    self.teacher_encoder.forward(
                         source=[
                             source_input_ids, source_segment_ids, source_input_mask, 
                         ],
                         base=[
                             base_input_ids, base_segment_ids, base_input_mask,
                         ],
-                        coords=[
-                            (
-                                l, source_intervention_mask, base_intervention_mask
-                            ) for l in teacher_invention_layer
-                        ]
+                        source_mask=source_intervention_mask, 
+                        base_mask=base_intervention_mask,
+                        coords=teacher_invention_layer,
                     )
-                # define a new function to compute loss values for both output_modes
                 full_output_teacher, pooled_output_teacher = teacher_source_outputs
-                # counterfactual outputs
                 cf_full_output_teacher, cf_pooled_output_teacher = teacher_counterfactual_outputs
                 
                 if self.kd_model.lower() in['kd', 'kd.cls']:
@@ -498,19 +441,19 @@ class TaskSpecificCausalDistiller:
         ##########
         # student
         student_source_outputs, _, student_counterfactual_outputs = \
-            self.student_encoder(
+            self.student_encoder.forward(
                 source=[
                     source_input_ids, source_segment_ids, source_input_mask, 
                 ],
                 base=[
                     base_input_ids, base_segment_ids, base_input_mask,
                 ],
-                coords=[
-                    (student_invention_layer, source_intervention_mask, base_intervention_mask),
-                ]
+                source_mask=source_intervention_mask, 
+                base_mask=base_intervention_mask,
+                coords=[student_invention_layer],
             )
         full_output_student, pooled_output_student = student_source_outputs
-        cf_full_output_student, cf_pooled_output_student = student_source_outputs
+        cf_full_output_student, cf_pooled_output_student = student_counterfactual_outputs
         
         if self.kd_model.lower() in['kd', 'kd.cls']:
             logits_pred_student = self.student_classifier(
@@ -557,6 +500,7 @@ class TaskSpecificCausalDistiller:
             loss = loss_dl + pt_loss + cf_pt_loss + loss_diito
         else:
             pt_loss = torch.tensor(0.0)
+            cf_pt_loss = torch.tensor(0.0)
             loss = loss_dl + loss_diito
         if self.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu.
@@ -573,7 +517,7 @@ class TaskSpecificCausalDistiller:
         self.last_cf_pt_loss = cf_pt_loss.mean().item() if self.n_gpu > 0 else cf_pt_loss.item()
         
         # epoch standard loss
-        n_sample = input_ids.shape[0]
+        n_sample = source_input_ids.shape[0]
         self.acc_tr_loss += self.last_loss * n_sample
         self.acc_tr_kd_loss += self.last_kd_loss * n_sample
         self.acc_tr_ce_loss += self.last_ce_loss * n_sample
