@@ -100,7 +100,7 @@ class TaskSpecificCausalDistiller:
         self.num_train_epochs = params.num_train_epochs
         self.gradient_accumulation_steps = params.gradient_accumulation_steps
         self.loss_scale = params.loss_scale
-        self.gamma = 0.3 # diito coefficient?
+        self.gamma = 1.0 # diito coefficient?
         
         # DIITO params
         self.is_diito = params.is_diito
@@ -516,9 +516,9 @@ class TaskSpecificCausalDistiller:
         
         # calculate loss, along with counterfactual loss
         loss_dl, kd_loss, ce_loss = distillation_loss(
-            logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
+            logits_pred_student, base_label_ids, teacher_pred, T=self.T, alpha=self.alpha
         )
-        loss_diito = diito_distillation_loss(
+        loss_diito = self.gamma * diito_distillation_loss(
             cf_logits_pred_student, cf_teacher_pred, T=self.T, alpha=self.alpha
         )
         
@@ -571,7 +571,7 @@ class TaskSpecificCausalDistiller:
         
         # pred acc
         pred_cls = logits_pred_student.data.max(1)[1]
-        self.acc_tr_acc += pred_cls.eq(source_label_ids).sum().cpu().item()
+        self.acc_tr_acc += pred_cls.eq(base_label_ids).sum().cpu().item()
         # cf pred acc
         cf_pred_cls_student = cf_logits_pred_student.data.max(1)[1]
         cf_pred_cls_teacher = cf_teacher_pred.data.max(1)[1]
@@ -618,12 +618,12 @@ class TaskSpecificCausalDistiller:
             else:
                 _, teacher_base_outputs, teacher_counterfactual_outputs = \
                     self.teacher_encoder.forward(
-                        source=[
+                        source=(
                             source_input_ids, source_segment_ids, source_input_mask, 
-                        ],
-                        base=[
+                        ),
+                        base=(
                             base_input_ids, base_segment_ids, base_input_mask,
-                        ],
+                        ),
                         source_mask=source_intervention_mask, 
                         base_mask=base_intervention_mask,
                         coords=teacher_invention_layer,
@@ -664,12 +664,12 @@ class TaskSpecificCausalDistiller:
         # student
         _, student_base_outputs, student_counterfactual_outputs = \
             self.student_encoder.forward(
-                source=[
+                source=(
                     source_input_ids, source_segment_ids, source_input_mask, 
-                ],
-                base=[
+                ),
+                base=(
                     base_input_ids, base_segment_ids, base_input_mask,
-                ],
+                ),
                 source_mask=source_intervention_mask, 
                 base_mask=base_intervention_mask,
                 coords=[student_invention_layer],
@@ -695,7 +695,7 @@ class TaskSpecificCausalDistiller:
         
         # calculate loss, along with counterfactual loss
         loss_dl, kd_loss, ce_loss = distillation_loss(
-            logits_pred_student, source_label_ids, teacher_pred, T=self.T, alpha=self.alpha
+            logits_pred_student, base_label_ids, teacher_pred, T=self.T, alpha=self.alpha
         )
         
         loss_diito = self.gamma * diito_distillation_loss(
@@ -751,7 +751,7 @@ class TaskSpecificCausalDistiller:
         
         # pred acc
         pred_cls = logits_pred_student.data.max(1)[1]
-        self.acc_tr_acc += pred_cls.eq(source_label_ids).sum().cpu().item()
+        self.acc_tr_acc += pred_cls.eq(base_label_ids).sum().cpu().item()
         # cf pred acc
         cf_pred_cls_student = cf_logits_pred_student.data.max(1)[1]
         cf_pred_cls_teacher = cf_teacher_pred.data.max(1)[1]
@@ -882,19 +882,19 @@ class TaskSpecificCausalDistiller:
         if not skip_update_iter:
             self.iter()
 
-        if self.n_iter % self.gradient_accumulation_steps == 0:
-            if self.fp16:
-                self.lr_this_step = self.learning_rate * warmup_linear(
-                    self.n_total_iter / self.num_train_optimization_steps,
-                    self.warmup_proportion
-                )
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = self.lr_this_step
-            else:
-                self.lr_this_step = self.optimizer.get_lr()
-                    
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+            if self.n_iter % self.gradient_accumulation_steps == 0:
+                if self.fp16:
+                    self.lr_this_step = self.learning_rate * warmup_linear(
+                        self.n_total_iter / self.num_train_optimization_steps,
+                        self.warmup_proportion
+                    )
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = self.lr_this_step
+                else:
+                    self.lr_this_step = self.optimizer.get_lr()
+
+                self.optimizer.step()
+                self.optimizer.zero_grad()
     
     def iter(self):
         """

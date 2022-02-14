@@ -10,6 +10,7 @@ import random
 import pickle
 import time
 import psutil
+import math
 
 import numpy as np
 import torch
@@ -125,7 +126,7 @@ if args.do_train:
     logger.info('skipping loading teacher\'s predictoin, we calculate this on-the-fly')
     train_examples, train_dataloader, _ = get_task_dataloader(task_name, read_set, tokenizer, args, SequentialSampler,
                                                               batch_size=args.train_batch_size)
-    num_train_optimization_steps = int(len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
+    num_train_optimization_steps = math.ceil(len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
     logger.info("***** Running training *****")
     logger.info("  Num examples = %d", len(train_examples))
     logger.info("  Batch size = %d", args.train_batch_size)
