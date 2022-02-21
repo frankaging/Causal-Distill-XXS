@@ -332,7 +332,7 @@ def get_predefine_argv(mode='glue', task_name='RTE', train_type='kd'):
                 '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/KD/{task_name}/teacher_12layer'),
                 '--do_train',
                 '--do_eval',
-                '--fp16', # in the original PKD repo, this is true.
+                # '--fp16', # in the original PKD repo, this is true.
             ]
         if train_type == 'finetune_teacher':
             argv += [
