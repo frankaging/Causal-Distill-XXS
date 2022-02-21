@@ -87,8 +87,7 @@ def default_parser():
                         default=1,
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument('--fp16',
-                        type=boolean_string,
-                        default=False,
+                        action="store_true",
                         help="Whether to use 16-bit float precision instead of 32-bit")
     parser.add_argument('--loss_scale',
                         type=float, default=0,
@@ -160,20 +159,19 @@ def default_parser():
                         type=str,
                         help="weight of each layer that we will put FC layers on, only available when kd_model is kd.full")
     parser.add_argument("--normalize_patience",
-                        default=False,
-                        type=boolean_string,
+                        action="store_true",
                         help="normalize patience or not")
     # Distillation related parameters
     parser.add_argument(
-        "--do_train", default=False, action="store_true", help="do training or not"
+        "--do_train", action="store_true", help="do training or not"
     )
     parser.add_argument(
-        "--do_eval", default=False, action="store_true", help="do evaluation during training or not"
+        "--do_eval", action="store_true", help="do evaluation during training or not"
     )
     
     # causal distillation related parameters.
     parser.add_argument(
-        "--is_diito", default=False, action="store_true", help="Whether to use causal distillation"
+        "--is_diito", action="store_true", help="Whether to use causal distillation"
     )
     parser.add_argument("--diito_type",
                         default="random",
@@ -201,17 +199,17 @@ def default_parser():
 
     parser.add_argument(
         "--interchange_consecutive_only", 
-        default=False, action="store_true", help="Whether to only interchange consecutive tokens"
+        action="store_true", help="Whether to only interchange consecutive tokens"
     )
     parser.add_argument(
-        "--data_augment", default=False, action="store_true", help="Whether to experiment with data augmentation"
+        "--data_augment", action="store_true", help="Whether to experiment with data augmentation"
     )
     parser.add_argument(
-        "--data_pair", default=False, action="store_true", help="Whether to experiment with data pairing"
+        "--data_pair", action="store_true", help="Whether to experiment with data pairing"
     )
     
     parser.add_argument(
-        "--is_wandb", default=False, action="store_true", help="Whether to use wandb to report metrics to"
+        "--is_wandb", action="store_true", help="Whether to use wandb to report metrics to"
     )
     parser.add_argument("--wandb_metadata",
                         default="",
@@ -332,9 +330,9 @@ def get_predefine_argv(mode='glue', task_name='RTE', train_type='kd'):
                 '--gradient_accumulation_steps', '1',
                 '--log_every_step', '1',
                 '--output_dir', os.path.join(HOME_DATA_FOLDER, f'outputs/KD/{task_name}/teacher_12layer'),
-                '--do_train', 'True',
-                '--do_eval', 'True',
-                '--fp16', 'False', # in the original PKD repo, this is true.
+                '--do_train',
+                '--do_eval',
+                '--fp16', # in the original PKD repo, this is true.
             ]
         if train_type == 'finetune_teacher':
             argv += [
@@ -366,7 +364,7 @@ def get_predefine_argv(mode='glue', task_name='RTE', train_type='kd'):
                 '--T', '10',
                 '--teacher_prediction', f'/home/JJteam/Project/PatientTeacherforBERT/data/outputs/KD/{task_name}/{task_name}_patient_kd_teacher_12layer_result_summary.pkl',
                 '--fc_layer_idx', '1,3,5,7,9',   # this for pkd-skip
-                '--normalize_patience', 'True',
+                '--normalize_patience',
             ]
     else:
         raise NotImplementedError('training mode %s has not been implemented yet' % mode)
