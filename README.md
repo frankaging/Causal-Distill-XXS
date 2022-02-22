@@ -10,7 +10,7 @@
 
 This is an **ONGOING** research effort. So, don't expect everything to be working. The is an extended implementation of our preprint [Causal Distillation for Language Models](https://zen-wu.social/papers/ACL22_CausalDistill.pdf) by applying the method to task-specific models (i.e., the teacher model here is a fine-tuned model). The codebased for the distillation method **the distillation interchange intervention training objective (DIITO)** can be found [here](https://github.com/frankaging/Causal-Distill).
 
-We fork our main codebase from the [Huggingface Distillation Interface](https://github.com/huggingface/transformers/tree/master/examples/research_projects/distillation).
+We fork our main codebase from the [PKD Distillation](https://github.com/intersun/PKD-for-BERT-Model-Compression) to ensure a fair comparison.
 
 ## Release Notes
 :white_check_mark: 02/21/2022 Release this codebase for others who are interested in applying [DIITO](https://github.com/frankaging/Causal-Distill) to task-specific models.
