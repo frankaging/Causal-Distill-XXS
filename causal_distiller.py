@@ -361,25 +361,15 @@ class TaskSpecificCausalDistiller:
                 # 2. get the actual sampled positions
                 # 3. sample accordingly from the dual example
                 if interchange_masked_token_only:
-                    # a corner case we need to consider is that the masked token
-                    # numbers may differ across two examples.
-                    interchange_count = pred_mask[i].sum()
-                    if interchange_count > dual_lengths[i]:
-                        # not likely, but we need to handle this.
-                        interchange_count = dual_lengths[i]
-                    interchange_position = pred_mask[i].nonzero().view(-1).tolist()
-                    interchange_position = random.sample(interchange_position, interchange_count)
-                    interchange_mask[i][interchange_position] = 1
-                    dual_interchange_position = random.sample(range(dual_max_seq_len), interchange_count)
-                    dual_interchange_mask[i][dual_interchange_position] = 1
+                    assert False # we should not hit this case!
                 else:
                     if interchange_max_token != -1:
                         interchange_count = min(interchange_max_token, int(min_len*interchange_prop))
                     else:
                         interchange_count = int(min_len*interchange_prop)
-                    interchange_position = random.sample(range(max_seq_len), interchange_count)
+                    interchange_position = random.sample(range(lengths[i]), interchange_count)
                     interchange_mask[i][interchange_position] = 1
-                    dual_interchange_position = random.sample(range(dual_max_seq_len), interchange_count)
+                    dual_interchange_position = random.sample(range(dual_lengths[i]), interchange_count)
                     dual_interchange_mask[i][dual_interchange_position] = 1
 
         # sanity checks
